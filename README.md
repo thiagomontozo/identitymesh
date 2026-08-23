@@ -1,6 +1,14 @@
 # IdentityMesh
 
 [![CI](https://github.com/thiagomontozo/identitymesh/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thiagomontozo/identitymesh/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/thiagomontozo/identitymesh/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/thiagomontozo/identitymesh/actions/workflows/codeql.yml)
+[![Status: Experimental](https://img.shields.io/badge/status-experimental-f59e0b)](#current-limitations)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
+[![Go 1.24](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=0b1f2a)](https://react.dev/)
+[![TypeScript 5.8](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/Docker-enabled-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/)
 
 > IdentityMesh correlates identities across connected systems, reconciles access state and verifies whether offboarding actions actually removed known access.
 
