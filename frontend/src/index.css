@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#15221d;background:#f5f4ef;font-synthesis:none;text-rendering:optimizeLegibility}
+*{box-sizing:border-box}body{margin:0;min-width:320px;min-height:100vh}button,input,select,textarea{font:inherit}
+@layer components{
+ .focus-ring{@apply focus:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2}
+ .card{@apply rounded-2xl border border-black/10 bg-white shadow-[0_1px_2px_rgba(0,0,0,.04)]}
+ .btn{@apply focus-ring inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition}
+ .btn-primary{@apply btn bg-forest text-white hover:bg-[#205548] disabled:cursor-not-allowed disabled:opacity-50}
+ .btn-secondary{@apply btn border border-black/15 bg-white hover:bg-sand}
+ .label{@apply mb-1 block text-sm font-semibold text-ink/80}
+ .input{@apply focus-ring min-h-11 w-full rounded-lg border border-black/20 bg-white px-3 text-sm}
+}

@@ -1,0 +1,41 @@
+dn: ou=people,dc=identitymesh,dc=test
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=identitymesh,dc=test
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=alex.morgan,ou=people,dc=identitymesh,dc=test
+objectClass: inetOrgPerson
+uid: alex.morgan
+cn: Alex Morgan
+sn: Morgan
+mail: alex.morgan@example.test
+employeeNumber: E1001
+description: DISABLED
+
+dn: uid=jordan.lee,ou=people,dc=identitymesh,dc=test
+objectClass: inetOrgPerson
+uid: jordan.lee
+cn: Jordan Lee
+sn: Lee
+mail: jordan.lee@example.test
+employeeNumber: E1002
+description: ACTIVE
+
+dn: uid=service.backup,ou=people,dc=identitymesh,dc=test
+objectClass: inetOrgPerson
+uid: service.backup
+cn: Backup Service
+sn: Service
+mail: service.backup@example.test
+employeeNumber: S9001
+description: ACTIVE
+
+dn: cn=directory-users,ou=groups,dc=identitymesh,dc=test
+objectClass: groupOfNames
+cn: directory-users
+description: Synthetic directory membership
+member: uid=alex.morgan,ou=people,dc=identitymesh,dc=test
+member: uid=jordan.lee,ou=people,dc=identitymesh,dc=test

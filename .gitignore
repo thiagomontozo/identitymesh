@@ -1,0 +1,15 @@
+.env
+node_modules/
+dist/
+coverage/
+tmp/
+data/
+*.log
+*.key
+*.pem
+test-results/
+playwright-report/
+test-artifacts/
+.DS_Store
+backend/identitymesh
+backend/identitymesh.exe

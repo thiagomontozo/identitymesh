@@ -1,0 +1,38 @@
+name: identitymesh-test
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    environment: {POSTGRES_DB: identitymesh_test, POSTGRES_USER: identitymesh, POSTGRES_PASSWORD: identitymesh-test-only}
+    ports: ["55432:5432"]
+    volumes: ["postgres-test-data:/var/lib/postgresql/data"]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U identitymesh -d identitymesh_test"], interval: 2s, timeout: 3s, retries: 30}
+  mock-scim-a:
+    build: {context: ., dockerfile: test/mock-scim/Dockerfile}
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    ports: ["18090:8090"]
+    healthcheck: {test: ["CMD", "/mock-scim", "--healthcheck"], interval: 10s, timeout: 2s, retries: 3}
+  mock-scim-b:
+    build: {context: ., dockerfile: test/mock-scim/Dockerfile}
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    ports: ["18091:8090"]
+  openldap-test:
+    build:
+      context: .
+      dockerfile: test/openldap/Dockerfile
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    environment:
+      LDAP_ORGANISATION: IdentityMesh Synthetic Directory
+      LDAP_DOMAIN: identitymesh.test
+      LDAP_ADMIN_PASSWORD: identitymesh-test-only
+      LDAP_TLS: "false"
+    ports: ["1389:389"]
+    volumes: ["openldap-test-data:/var/lib/ldap", "openldap-test-config:/etc/ldap/slapd.d"]
+    healthcheck: {test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=identitymesh,dc=test -D cn=admin,dc=identitymesh,dc=test -w identitymesh-test-only '(objectClass=*)' >/dev/null"], interval: 5s, timeout: 5s, retries: 20}
+volumes:
+  postgres-test-data: {labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}}
+  openldap-test-data: {labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}}
+  openldap-test-config: {labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}}
+networks:
+  default:
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}

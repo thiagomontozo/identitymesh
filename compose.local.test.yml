@@ -1,0 +1,5 @@
+services:
+  postgres-test:
+    pull_policy: never
+  openldap-test:
+    pull_policy: never

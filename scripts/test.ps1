@@ -1,0 +1,6 @@
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+go test -count=1 -p=1 ./backend/...
+go vet ./backend/...
+Push-Location frontend
+try { npm ci; npm run lint; npm run typecheck; npm test; npm run build } finally { Pop-Location }

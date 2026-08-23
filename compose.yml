@@ -1,0 +1,58 @@
+name: identitymesh
+services:
+  postgres:
+    image: postgres:16-alpine
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    environment:
+      POSTGRES_DB: identitymesh
+      POSTGRES_USER: identitymesh
+      POSTGRES_PASSWORD: identitymesh-development-only
+    ports: ["5432:5432"]
+    volumes: ["identitymesh-postgres:/var/lib/postgresql/data"]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U identitymesh -d identitymesh"], interval: 5s, timeout: 3s, retries: 20}
+    restart: unless-stopped
+  backend:
+    image: identitymesh-backend:local
+    build: {context: ., dockerfile: backend/Dockerfile}
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    environment:
+      IDENTITYMESH_ENV: development
+      IDENTITYMESH_HTTP_ADDR: :8080
+      IDENTITYMESH_DATABASE_URL: postgres://identitymesh:identitymesh-development-only@postgres:5432/identitymesh?sslmode=disable
+      IDENTITYMESH_SESSION_SECRET: local-development-secret-replace-before-production
+      IDENTITYMESH_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      IDENTITYMESH_ALLOWED_ORIGIN: http://localhost:5173
+      IDENTITYMESH_SECURE_COOKIES: "false"
+      IDENTITYMESH_REQUIRE_MFA_FOR_PRIVILEGED_ROLES: "false"
+      IDENTITYMESH_BOOTSTRAP_ADMIN_EMAIL: ${IDENTITYMESH_BOOTSTRAP_ADMIN_EMAIL:-admin@example.test}
+      IDENTITYMESH_BOOTSTRAP_ADMIN_PASSWORD: ${IDENTITYMESH_BOOTSTRAP_ADMIN_PASSWORD:-identitymesh-demo-password}
+    ports: ["8080:8080"]
+    depends_on: {postgres: {condition: service_healthy}}
+    healthcheck: {test: ["CMD", "/app/identitymesh-healthcheck"], interval: 10s, timeout: 3s, retries: 10, start_period: 10s}
+    restart: unless-stopped
+  frontend:
+    image: identitymesh-frontend:local
+    build: {context: ., dockerfile: frontend/Dockerfile}
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    ports: ["5173:8080"]
+    depends_on: {backend: {condition: service_started}}
+    healthcheck: {test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health || exit 1"], interval: 10s, timeout: 3s, retries: 10}
+    restart: unless-stopped
+  mock-scim-a:
+    profiles: ["demo"]
+    build: {context: ., dockerfile: test/mock-scim/Dockerfile}
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    ports: ["8090:8090"]
+    healthcheck: {test: ["CMD", "/mock-scim", "--healthcheck"], interval: 5s, timeout: 3s, retries: 20}
+  mock-scim-b:
+    profiles: ["demo"]
+    build: {context: ., dockerfile: test/mock-scim/Dockerfile}
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    ports: ["8091:8090"]
+    healthcheck: {test: ["CMD", "/mock-scim", "--healthcheck"], interval: 5s, timeout: 3s, retries: 20}
+volumes:
+  identitymesh-postgres:
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+networks:
+  default:
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}

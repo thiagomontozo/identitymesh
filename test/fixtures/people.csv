@@ -1,0 +1,6 @@
+employee_id,display_name,email,department,manager_id,status
+E1001,Alex Morgan,alex.morgan@identitymesh.test,Engineering,,TERMINATED
+E1002,Jordan Lee,jordan.lee@identitymesh.test,Security,,ACTIVE
+E1003,Taylor Silva,taylor.silva@identitymesh.test,Finance,E1002,ACTIVE
+E1004,Morgan Chen,morgan.chen@identitymesh.test,Operations,E1002,LEAVE
+E1005,Sam Rivera,sam.rivera@identitymesh.test,Engineering,E1002,ACTIVE
