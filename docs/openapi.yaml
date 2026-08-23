@@ -1,0 +1,141 @@
+openapi: 3.1.0
+info:
+  title: IdentityMesh API
+  version: 0.1.0
+  description: Experimental identity lifecycle and access assurance API.
+servers:
+  - url: /api/v1
+security:
+  - cookieSession: []
+paths:
+  /auth/login:
+    post:
+      security: []
+      summary: Create an administrator session
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/LoginRequest'}}}}
+      responses: {'200': {description: Authenticated}, '401': {$ref: '#/components/responses/Error'}}
+  /auth/logout:
+    post:
+      summary: Revoke the current session
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses: {'204': {description: Revoked}, '403': {$ref: '#/components/responses/Error'}}
+  /auth/me:
+    get:
+      summary: Read current user and roles
+      responses: {'200': {description: Current session}}
+  /auth/password:
+    post:
+      summary: Change password and revoke active sessions
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses: {'204': {description: Password changed}, '400': {$ref: '#/components/responses/Error'}}
+  /auth/mfa/enroll:
+    post:
+      summary: Begin TOTP enrollment
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Enrollment secret returned once for setup}}
+  /auth/mfa/confirm:
+    post:
+      summary: Confirm TOTP enrollment
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      responses: {'204': {description: MFA enabled}, '400': {$ref: '#/components/responses/Error'}}
+  /dashboard:
+    get:
+      summary: Identity Assurance Overview metrics
+      responses: {'200': {description: Tenant-scoped metrics}}
+  /people:
+    get:
+      summary: List people
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}, {name: q, in: query, schema: {type: string}}, {name: status, in: query, schema: {$ref: '#/components/schemas/LifecycleStatus'}}]
+      responses: {'200': {description: People page}, '403': {$ref: '#/components/responses/Error'}}
+  /people/{id}:
+    get:
+      summary: Person 360 with known identities
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses: {'200': {description: Person 360}, '404': {$ref: '#/components/responses/Error'}}
+  /connectors:
+    get:
+      summary: List connectors
+      responses: {'200': {description: Connectors}}
+    post:
+      summary: Create a read-only-by-default connector
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectorInput'}}}}
+      responses: {'201': {description: Created}, '400': {$ref: '#/components/responses/Error'}}
+  /connectors/{id}/sync:
+    post:
+      summary: Start typed connector discovery
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Sync result}, '502': {$ref: '#/components/responses/Error'}}
+  /connectors/{id}/test:
+    post:
+      summary: Authenticate and perform one bounded read from the expected endpoint; never writes
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Connection confirmed without a write}, '502': {$ref: '#/components/responses/Error'}}
+  /csv-import/preview:
+    post:
+      summary: Parse and validate without applying
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, properties: {file: {type: string, format: binary}}, required: [file]}}}}
+      responses: {'200': {description: Preview}, '413': {$ref: '#/components/responses/Error'}}
+  /lifecycle-cases:
+    post:
+      summary: Create a draft per-person lifecycle case
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {personId: {type: string, format: uuid}}, required: [personId]}}}}
+      responses: {'201': {description: Draft created}}
+  /lifecycle-cases/{id}:
+    get:
+      summary: Read case, actions and verification
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses: {'200': {description: Lifecycle case}}
+  /lifecycle-cases/{id}/plan:
+    post:
+      summary: Generate preview and await approval
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Action preview}, '409': {$ref: '#/components/responses/Error'}}
+  /lifecycle-cases/{id}/approve:
+    post:
+      summary: Explicitly approve planned actions
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Approved}, '403': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
+  /lifecycle-cases/{id}/execute:
+    post:
+      summary: Execute approved actions then verify observed state
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Verification result}, '409': {$ref: '#/components/responses/Error'}}
+  /lifecycle-cases/{id}/events:
+    get:
+      summary: Stream lifecycle progress over SSE
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses: {'200': {description: text/event-stream, content: {text/event-stream: {schema: {type: string}}}}}
+  /access-review-items/{id}/decision:
+    post:
+      summary: Record review decision without direct provider mutation
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'201': {description: Decision recorded}}
+  /evidence:
+    get:
+      summary: List tenant evidence
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}]
+      responses: {'200': {description: Evidence page}}
+  /audit:
+    get:
+      summary: List tenant audit events
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}]
+      responses: {'200': {description: Audit page}}
+components:
+  securitySchemes:
+    cookieSession: {type: apiKey, in: cookie, name: identitymesh_session}
+  parameters:
+    ID: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    CSRF: {name: X-CSRF-Token, in: header, required: true, schema: {type: string}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+    Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
+  schemas:
+    LoginRequest: {type: object, required: [email, password], additionalProperties: false, properties: {email: {type: string, format: email}, password: {type: string, minLength: 12}}}
+    ConnectorInput: {type: object, required: [name, type], properties: {name: {type: string}, type: {enum: [CSV_AUTHORITATIVE_SOURCE, SCIM_2_0, LDAP_DIRECTORY]}, baseURL: {type: string, format: uri}, environment: {type: string}, credential: {type: string, writeOnly: true}, writeEnabled: {type: boolean, default: false}, capabilities: {type: array, items: {type: string}}}}
+    LifecycleStatus: {type: string, enum: [PRE_HIRE, ACTIVE, LEAVE, SUSPENDED, TERMINATED, UNKNOWN]}
+    VerificationStatus: {type: string, enum: [VERIFIED, PARTIALLY_VERIFIED, INCONCLUSIVE, FAILED]}
+    Error: {type: object, required: [error], properties: {error: {type: object, required: [code, message, requestId], properties: {code: {type: string}, message: {type: string}, requestId: {type: string}}}}}
+  responses:
+    Error: {description: Standard API error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

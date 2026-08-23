@@ -1,0 +1,9 @@
+# API
+
+The JSON API is rooted at `/api/v1`. Errors use `{ "error": { "code", "message", "requestId" } }` and never expose stack traces. List resources accept bounded `limit` and `offset`; common resources accept filters/search.
+
+Principal groups are auth, people, connectors/syncs, identities/correlation candidates, applications/entitlements/grants, reconciliation/findings, lifecycle cases/actions/events, access reviews, evidence/reports, users, audit and settings. Mutations use cookie authentication plus `X-CSRF-Token`.
+
+See `openapi.yaml` for the maintained contract subset. SSE endpoints stream lifecycle progress; reconnecting clients should reload the authoritative case before relying on streamed events.
+
+Authentication, connector test, connector sync, CSV preview and lifecycle execution have bounded process-local rate limits. Connector test performs only a typed read of the expected endpoint and never uses write capability.
