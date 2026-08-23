@@ -18,6 +18,7 @@ import (
 	"github.com/thiagomontozo/identitymesh/backend/internal/csvsource"
 	"github.com/thiagomontozo/identitymesh/backend/internal/database"
 	"github.com/thiagomontozo/identitymesh/backend/internal/domain"
+	"github.com/thiagomontozo/identitymesh/backend/internal/notifier"
 	"github.com/thiagomontozo/identitymesh/backend/internal/secure"
 )
 
@@ -32,6 +33,7 @@ type Service struct {
 	Clock     Clock
 	AllowHTTP bool
 	Timeout   time.Duration
+	Notifier  notifier.Notifier
 }
 
 func (s *Service) connectorToken(ctx context.Context, orgID, connectorID string) (string, error) {
@@ -59,6 +61,67 @@ type SyncResult struct {
 	GroupsDiscovered   int    `json:"groupsDiscovered"`
 	FindingsCreated    int    `json:"findingsCreated"`
 	Status             string `json:"status"`
+}
+
+func (s *Service) SyncConnector(ctx context.Context, orgID, connectorID, requestID string) (SyncResult, error) {
+	var connectorType string
+	if err := s.DB.Pool.QueryRow(ctx, `SELECT type FROM identity_connectors WHERE organization_id=$1 AND id=$2`, orgID, connectorID).Scan(&connectorType); err != nil {
+		return SyncResult{}, err
+	}
+	switch connectorType {
+	case "SCIM_2_0":
+		return s.SyncSCIM(ctx, orgID, connectorID, requestID)
+	case "LDAP_DIRECTORY":
+		cfg, err := s.ldapConfiguration(ctx, orgID, connectorID)
+		if err != nil {
+			return SyncResult{}, err
+		}
+		return s.SyncLDAP(ctx, orgID, connectorID, requestID, cfg)
+	default:
+		return SyncResult{}, errors.New("connector type does not support remote synchronization")
+	}
+}
+
+func (s *Service) TestConnection(ctx context.Context, orgID, connectorID string) error {
+	var connectorType string
+	if err := s.DB.Pool.QueryRow(ctx, `SELECT type FROM identity_connectors WHERE organization_id=$1 AND id=$2`, orgID, connectorID).Scan(&connectorType); err != nil {
+		return err
+	}
+	if connectorType == "SCIM_2_0" {
+		return s.TestSCIMConnection(ctx, orgID, connectorID)
+	}
+	if connectorType == "LDAP_DIRECTORY" {
+		cfg, err := s.ldapConfiguration(ctx, orgID, connectorID)
+		if err != nil {
+			return err
+		}
+		client, err := ldapconnector.New(cfg)
+		if err != nil {
+			return err
+		}
+		return client.TestConnection(ctx)
+	}
+	return errors.New("connector type has no remote connection to test")
+}
+
+func (s *Service) ldapConfiguration(ctx context.Context, orgID, connectorID string) (ldapconnector.Config, error) {
+	var baseURL string
+	var raw []byte
+	if err := s.DB.Pool.QueryRow(ctx, `SELECT coalesce(base_url,''),configuration FROM identity_connectors WHERE organization_id=$1 AND id=$2 AND type='LDAP_DIRECTORY'`, orgID, connectorID).Scan(&baseURL, &raw); err != nil {
+		return ldapconnector.Config{}, err
+	}
+	var values struct {
+		BindDN, SearchBase, UserFilter, GroupFilter, ServerName string
+		PageSize                                                uint32
+	}
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return ldapconnector.Config{}, errors.New("LDAP connector configuration is malformed")
+	}
+	password, err := s.connectorToken(ctx, orgID, connectorID)
+	if err != nil {
+		return ldapconnector.Config{}, err
+	}
+	return ldapconnector.Config{URL: baseURL, BindDN: values.BindDN, Password: password, SearchBase: values.SearchBase, UserFilter: values.UserFilter, GroupFilter: values.GroupFilter, PageSize: values.PageSize, Timeout: s.Timeout, ServerName: values.ServerName}, nil
 }
 
 func first(values []string) string {
@@ -100,6 +163,9 @@ func (s *Service) SyncLDAP(ctx context.Context, orgID, connectorID, requestID st
 	if _, err := s.DB.Pool.Exec(ctx, `INSERT INTO connector_syncs(id,organization_id,connector_id,trigger_type,status,request_id) VALUES($1,$2,$3,'MANUAL','RUNNING',$4)`, runID, orgID, connectorID, requestID); err != nil {
 		return SyncResult{}, err
 	}
+	if _, err := s.DB.Pool.Exec(ctx, `INSERT INTO reconciliation_runs(id,organization_id,connector_id,trigger_type,status) VALUES($1,$2,$3,'MANUAL','RUNNING')`, runID, orgID, connectorID); err != nil {
+		return SyncResult{}, err
+	}
 	client, err := ldapconnector.New(cfg)
 	if err != nil {
 		return s.failSync(ctx, orgID, connectorID, runID, "LDAP_CONFIGURATION_ERROR", err)
@@ -117,6 +183,7 @@ func (s *Service) SyncLDAP(ctx context.Context, orgID, connectorID, requestID st
 		return SyncResult{}, err
 	}
 	defer tx.Rollback(ctx)
+	seenAccounts := make([]string, 0, len(users))
 	for _, entry := range users {
 		state := "ACTIVE"
 		if strings.EqualFold(ldapValue(entry.Attributes, "description"), "DISABLED") || ldapValue(entry.Attributes, "pwdAccountLockedTime") != "" {
@@ -131,6 +198,10 @@ func (s *Service) SyncLDAP(ctx context.Context, orgID, connectorID, requestID st
 		if err != nil {
 			return SyncResult{}, err
 		}
+		seenAccounts = append(seenAccounts, entry.DN)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE identity_accounts SET active_status='MISSING',missing_since=coalesce(missing_since,now()),updated_at=now() WHERE organization_id=$1 AND connector_id=$2 AND NOT(external_account_id=ANY($3::text[]))`, orgID, connectorID, seenAccounts); err != nil {
+		return SyncResult{}, err
 	}
 	for _, group := range groups {
 		name := ldapValue(group.Attributes, "cn")
@@ -154,6 +225,9 @@ func (s *Service) SyncLDAP(ctx context.Context, orgID, connectorID, requestID st
 		return SyncResult{}, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE identity_connectors SET last_sync_at=now(),last_sync_status='SUCCEEDED',updated_at=now() WHERE organization_id=$1 AND id=$2`, orgID, connectorID); err != nil {
+		return SyncResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE reconciliation_runs SET status='SUCCEEDED',completed_at=now(),accounts_discovered=$1,groups_discovered=$2,findings_created=$3,summary=jsonb_build_object('readOnly',true) WHERE organization_id=$4 AND id=$5`, len(users), len(groups), findings, orgID, runID); err != nil {
 		return SyncResult{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -195,6 +269,9 @@ func (s *Service) SyncSCIM(ctx context.Context, orgID, connectorID, requestID st
 	runID := uuid.NewString()
 	_, err = s.DB.Pool.Exec(ctx, `INSERT INTO connector_syncs(id,organization_id,connector_id,trigger_type,status,request_id) VALUES($1,$2,$3,'MANUAL','RUNNING',$4)`, runID, orgID, connectorID, requestID)
 	if err != nil {
+		return SyncResult{}, err
+	}
+	if _, err = s.DB.Pool.Exec(ctx, `INSERT INTO reconciliation_runs(id,organization_id,connector_id,trigger_type,status) VALUES($1,$2,$3,'MANUAL','RUNNING')`, runID, orgID, connectorID); err != nil {
 		return SyncResult{}, err
 	}
 	token, err := s.connectorToken(ctx, orgID, connectorID)
@@ -250,6 +327,9 @@ func (s *Service) SyncSCIM(ctx context.Context, orgID, connectorID, requestID st
 			}
 		}
 	}
+	if _, err = tx.Exec(ctx, `UPDATE identity_accounts SET active_status='MISSING',missing_since=coalesce(missing_since,now()),updated_at=now() WHERE organization_id=$1 AND connector_id=$2 AND NOT(id=ANY($3::uuid[]))`, orgID, connectorID, seen); err != nil {
+		return SyncResult{}, err
+	}
 	findings, err := s.correlate(ctx, tx, orgID, connectorID)
 	if err != nil {
 		return SyncResult{}, err
@@ -257,6 +337,9 @@ func (s *Service) SyncSCIM(ctx context.Context, orgID, connectorID, requestID st
 	_, err = tx.Exec(ctx, `UPDATE connector_syncs SET status='SUCCEEDED',completed_at=now(),accounts_discovered=$1,groups_discovered=$2,summary=jsonb_build_object('connector',$3::text) WHERE organization_id=$4 AND id=$5`, len(users), len(groups), name, orgID, runID)
 	if err == nil {
 		_, err = tx.Exec(ctx, `UPDATE identity_connectors SET last_sync_at=now(),last_sync_status='SUCCEEDED',updated_at=now() WHERE organization_id=$1 AND id=$2`, orgID, connectorID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `UPDATE reconciliation_runs SET status='SUCCEEDED',completed_at=now(),accounts_discovered=$1,groups_discovered=$2,findings_created=$3,summary=jsonb_build_object('normalized',true,'stalePreservedOnFailure',true) WHERE organization_id=$4 AND id=$5`, len(users), len(groups), findings, orgID, runID)
 	}
 	if err != nil {
 		return SyncResult{}, err
@@ -285,6 +368,10 @@ func (s *Service) TestSCIMConnection(ctx context.Context, orgID, connectorID str
 func (s *Service) failSync(ctx context.Context, orgID, connectorID, runID, code string, cause error) (SyncResult, error) {
 	_, _ = s.DB.Pool.Exec(ctx, `UPDATE connector_syncs SET status='FAILED',completed_at=now(),error_code=$1,summary=jsonb_build_object('message',$2::text) WHERE organization_id=$3 AND id=$4`, code, cause.Error(), orgID, runID)
 	_, _ = s.DB.Pool.Exec(ctx, `UPDATE identity_connectors SET last_sync_status='FAILED',updated_at=now() WHERE organization_id=$1 AND id=$2`, orgID, connectorID)
+	_, _ = s.DB.Pool.Exec(ctx, `UPDATE reconciliation_runs SET status='FAILED',completed_at=now(),summary=jsonb_build_object('errorCode',$1::text,'staleDataPreserved',true) WHERE organization_id=$2 AND id=$3`, code, orgID, runID)
+	if s.Notifier != nil {
+		_ = s.Notifier.Notify(ctx, notifier.Event{OrganizationID: orgID, Type: "CONNECTOR_SYNC_FAILED", Payload: map[string]any{"connectorId": connectorID, "runId": runID, "errorCode": code}, OccurredAt: s.Clock.Now()})
+	}
 	return SyncResult{RunID: runID, Status: "FAILED"}, cause
 }
 func (s *Service) correlate(ctx context.Context, tx pgx.Tx, orgID, connectorID string) (int, error) {
@@ -585,6 +672,9 @@ func (s *Service) ExecuteAndVerify(ctx context.Context, orgID, caseID, userID st
 	if err == nil {
 		_, err = s.DB.Pool.Exec(ctx, `INSERT INTO lifecycle_events(organization_id,case_id,type,summary,metadata) VALUES($1,$2,'VERIFICATION_COMPLETED','Verification completed from observed provider state',jsonb_build_object('status',$3::text))`, orgID, caseID, result)
 	}
+	if err == nil && s.Notifier != nil && result != domain.Verified {
+		_ = s.Notifier.Notify(ctx, notifier.Event{OrganizationID: orgID, Type: "OFFBOARDING_" + string(result), Payload: map[string]any{"caseId": caseID, "verificationStatus": result}, OccurredAt: s.Clock.Now()})
+	}
 	return result, err
 }
 
@@ -627,10 +717,13 @@ func (s *Service) DecideReview(ctx context.Context, orgID, itemID, userID, decis
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var campaignID string
-	err = tx.QueryRow(ctx, `SELECT campaign_id FROM access_review_items WHERE organization_id=$1 AND id=$2 FOR UPDATE`, orgID, itemID).Scan(&campaignID)
+	var campaignID, assignedReviewer string
+	err = tx.QueryRow(ctx, `SELECT i.campaign_id,c.reviewer_user_id FROM access_review_items i JOIN access_review_campaigns c ON c.id=i.campaign_id AND c.organization_id=$1 WHERE i.organization_id=$1 AND i.id=$2 FOR UPDATE OF i`, orgID, itemID).Scan(&campaignID, &assignedReviewer)
 	if err != nil {
 		return err
+	}
+	if assignedReviewer != userID {
+		return errors.New("review decision requires the assigned reviewer")
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO access_review_decisions(organization_id,item_id,reviewer_user_id,decision,comment) VALUES($1,$2,$3,$4,$5)`, orgID, itemID, userID, decision, comment)
 	if err == nil {
@@ -641,6 +734,13 @@ func (s *Service) DecideReview(ctx context.Context, orgID, itemID, userID, decis
 	}
 	if decision == "REVOKE" {
 		_, err = tx.Exec(ctx, `INSERT INTO outbox_events(organization_id,type,payload) VALUES($1,'ACCESS_REVIEW_REVOCATION_PROPOSED',jsonb_build_object('itemId',$2::text,'campaignId',$3::text,'requiresApproval',true))`, orgID, itemID, campaignID)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO audit_events(organization_id,actor_user_id,event_type,resource_type,resource_id,metadata,request_id) VALUES($1,$2,'access_review.decision','access_review_item',$3,jsonb_build_object('decision',$4::text),'access-review-decision')`, orgID, userID, itemID, decision)
+	if err == nil {
+		_, err = tx.Exec(ctx, `UPDATE access_review_campaigns c SET status='COMPLETED',completed_at=now() WHERE c.organization_id=$1 AND c.id=$2 AND NOT EXISTS(SELECT 1 FROM access_review_items i WHERE i.organization_id=$1 AND i.campaign_id=c.id AND i.status<>'DECIDED')`, orgID, campaignID)
 	}
 	if err != nil {
 		return err

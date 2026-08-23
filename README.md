@@ -21,8 +21,16 @@ Provisioning asks whether a disable request was sent. Identity assurance asks wh
 - Deterministic correlation, manual candidates, orphan and duplicate-account findings.
 - Per-person offboarding plans, explicit approval, idempotent actions and bounded execution.
 - Provider re-read after writes, honest `VERIFIED`, `PARTIALLY_VERIFIED`, `INCONCLUSIVE` and `FAILED` results.
-- Verification snapshots, SHA-256 integrity metadata, audit events and access review decisions.
-- Argon2id passwords, server sessions, CSRF protection, RBAC, TOTP foundation and AES-256-GCM connector secrets.
+- Verification snapshots, downloadable PDF reports with SHA-256 integrity metadata, audit events and access review decisions.
+- Argon2id passwords, revocable server sessions, CSRF protection, RBAC, working TOTP enrollment/login and AES-256-GCM connector secrets.
+- Complete workspaces for identities, applications/access, connectors, reconciliation, lifecycle, reviews, findings, evidence, reports, users, audit and settings.
+- Scheduled SCIM/LDAP synchronization with PostgreSQL advisory locking, bounded workers, in-app notifications and optional signed webhooks.
+
+## v0.1 completion
+
+IdentityMesh v0.1 is functionally complete as an experimental identity-assurance core. Every primary navigation area is backed by tenant-scoped APIs rather than placeholder pages. The browser supports authoritative CSV preview/confirm/apply, SCIM and read-only LDAP administration, manual correlation decisions, person-centered offboarding, access-review decisions, user/session/MFA administration, retention settings and assurance-report export.
+
+The completed synthetic acceptance path imports an authoritative person, discovers SCIM and LDAP identities, correlates accounts, detects orphan and ambiguous identities, requires plan approval, disables SCIM accounts, re-reads providers, records evidence and produces a `VERIFIED` snapshot and PDF. Failure, provider-unavailable and post-write-state-mismatch scenarios remain required tests and never produce a false `VERIFIED` result.
 
 ## Identity Assurance Model
 
@@ -54,7 +62,7 @@ IdentityMesh is a modular monolith. Provider calls occur outside database transa
 
 ## Identity Correlation
 
-Exact immutable employee identifiers and exact unique emails in trusted domains are high-confidence signals. Normalized usernames plus other consistent attributes may produce medium confidence. Names alone never auto-link; they create reviewable candidates. Confidence is categorical and accompanied by human-readable reasons, not a pseudo-scientific score.
+Exact immutable employee identifiers and exact unique emails in administratively trusted domains are high-confidence signals. Normalized usernames plus other consistent attributes may produce medium confidence. Names alone never auto-link; they create reviewable candidates. Confidence is categorical and accompanied by human-readable reasons, not a pseudo-scientific score.
 
 ## Offboarding Verification
 
@@ -82,7 +90,7 @@ Do not reuse development credentials in another environment. Production should p
 
 ## Docker development
 
-`compose.yml` runs PostgreSQL, the Go API and the React frontend. `compose.test.yml` runs only synthetic PostgreSQL, two TEST/DEMO-only SCIM providers and OpenLDAP. No test contacts a real directory or SaaS tenant.
+`compose.yml` runs PostgreSQL, the Go API and the React frontend; its `demo` profile adds two TEST/DEMO-only SCIM providers. `compose.test.yml` runs synthetic PostgreSQL, both SCIM providers and OpenLDAP. No test contacts a real directory or SaaS tenant.
 
 PowerShell helpers live in `scripts/`. `scripts/integration.ps1` always tears down the test stack and its dedicated volumes.
 
@@ -99,7 +107,7 @@ Frontend checks run with `npm ci`, `npm test`, and `npm run build`. See [testing
 
 ## Security
 
-Security-sensitive invariants include organization-scoped queries, backend authorization, Argon2id password hashing, hashed session tokens, CSRF validation, encrypted connector credentials, fixed connector origins, blocked metadata endpoints, explicit approval and post-write observation. See [security model](docs/security-model.md), [threat model](docs/threat-model.md), and [SECURITY.md](SECURITY.md).
+Security-sensitive invariants include organization-scoped queries, backend authorization, Argon2id password hashing, hashed session tokens, CSRF validation, encrypted connector credentials, fixed connector origins, blocked metadata endpoints, explicit approval and post-write observation. Optional webhook notifications are fixed-origin, signed and redirect-restricted. See [security model](docs/security-model.md), [threat model](docs/threat-model.md), [notifications](docs/notifications.md), and [SECURITY.md](SECURITY.md).
 
 ## Current limitations
 
@@ -107,7 +115,7 @@ Security-sensitive invariants include organization-scoped queries, backend autho
 - No native Entra ID, Okta, Google Workspace, GitHub or other SaaS connector.
 - No automatic discovery of systems that were not configured.
 - No destructive account delete or bulk lifecycle operation.
-- Single control-plane process, process-local rate limiting and DB-backed bounded workers; no distributed queue.
+- Single control-plane process, process-local rate limiting and bounded in-process workers; scheduled jobs use PostgreSQL advisory locks but there is no distributed queue.
 - Local AES-GCM secret store only; no HSM or managed secret store integration.
 - No production-scale load validation or compliance certification.
 

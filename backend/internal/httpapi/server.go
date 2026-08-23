@@ -259,6 +259,10 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.mfaEnroll(w, r)
 	case r.Method == "POST" && path == "/auth/mfa/confirm":
 		s.mfaConfirm(w, r)
+	case r.Method == "GET" && path == "/auth/sessions":
+		s.sessions(w, r)
+	case r.Method == "DELETE" && strings.HasPrefix(path, "/auth/sessions/"):
+		s.revokeSession(w, r)
 	case r.Method == "GET" && path == "/dashboard":
 		s.require("person.read", s.dashboard)(w, r)
 	case r.Method == "GET" && path == "/people":
@@ -269,14 +273,46 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.require("connector.read", s.connectors)(w, r)
 	case r.Method == "POST" && path == "/connectors":
 		s.require("connector.manage", s.createConnector)(w, r)
+	case r.Method == "GET" && strings.HasPrefix(path, "/connectors/") && strings.HasSuffix(path, "/syncs"):
+		s.require("connector.read", s.connectorSyncs)(w, r)
+	case r.Method == "GET" && strings.HasPrefix(path, "/connectors/"):
+		s.require("connector.read", s.connectorDetail)(w, r)
+	case r.Method == "PATCH" && strings.HasPrefix(path, "/connectors/"):
+		s.require("connector.manage", s.updateConnector)(w, r)
 	case r.Method == "POST" && strings.HasPrefix(path, "/connectors/") && strings.HasSuffix(path, "/test"):
 		s.require("connector.manage", s.rate(10, time.Minute, s.testConnector))(w, r)
 	case r.Method == "POST" && strings.HasPrefix(path, "/connectors/") && strings.HasSuffix(path, "/sync"):
 		s.require("connector.sync", s.rate(10, time.Minute, s.syncConnector))(w, r)
 	case r.Method == "POST" && path == "/csv-import/preview":
 		s.require("person.manage", s.rate(10, time.Minute, s.csvPreview))(w, r)
+	case r.Method == "POST" && path == "/csv-import/apply":
+		s.require("person.manage", s.rate(6, time.Minute, s.csvApply))(w, r)
+	case r.Method == "GET" && path == "/identities":
+		s.require("identity.read", s.identities)(w, r)
+	case r.Method == "GET" && path == "/correlation-candidates":
+		s.require("identity.read", s.correlationCandidates)(w, r)
+	case r.Method == "POST" && strings.HasPrefix(path, "/correlation-candidates/") && strings.HasSuffix(path, "/accept"):
+		s.require("identity.link", s.acceptCandidate)(w, r)
+	case r.Method == "POST" && strings.HasPrefix(path, "/correlation-candidates/") && strings.HasSuffix(path, "/reject"):
+		s.require("identity.link", s.rejectCandidate)(w, r)
+	case r.Method == "GET" && path == "/applications":
+		s.require("identity.read", s.applications)(w, r)
+	case r.Method == "POST" && path == "/applications":
+		s.require("connector.manage", s.createApplication)(w, r)
+	case r.Method == "GET" && path == "/entitlements":
+		s.require("identity.read", s.entitlements)(w, r)
+	case r.Method == "GET" && path == "/access-grants":
+		s.require("identity.read", s.accessGrants)(w, r)
+	case r.Method == "GET" && path == "/reconciliation":
+		s.require("connector.read", s.reconciliationRuns)(w, r)
+	case r.Method == "GET" && path == "/findings":
+		s.require("identity.read", s.findings)(w, r)
+	case r.Method == "PATCH" && strings.HasPrefix(path, "/findings/"):
+		s.require("identity.link", s.updateFinding)(w, r)
 	case r.Method == "POST" && path == "/lifecycle-cases":
 		s.require("lifecycle.plan", s.createCase)(w, r)
+	case r.Method == "GET" && path == "/lifecycle-cases":
+		s.require("lifecycle.read", s.lifecycleCases)(w, r)
 	case r.Method == "GET" && strings.HasPrefix(path, "/lifecycle-cases/") && strings.HasSuffix(path, "/events"):
 		s.require("lifecycle.read", s.caseEvents)(w, r)
 	case r.Method == "GET" && strings.HasPrefix(path, "/lifecycle-cases/"):
@@ -287,12 +323,34 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.require("lifecycle.approve", s.approveCase)(w, r)
 	case r.Method == "POST" && strings.HasSuffix(path, "/execute"):
 		s.require("lifecycle.execute", s.rate(8, time.Minute, s.executeCase))(w, r)
+	case r.Method == "POST" && strings.HasSuffix(path, "/cancel"):
+		s.require("lifecycle.plan", s.cancelCase)(w, r)
+	case r.Method == "GET" && path == "/access-reviews":
+		s.require("access_review.read", s.accessReviews)(w, r)
+	case r.Method == "POST" && path == "/access-reviews":
+		s.require("access_review.manage", s.createAccessReview)(w, r)
+	case r.Method == "GET" && strings.HasPrefix(path, "/access-reviews/"):
+		s.require("access_review.read", s.accessReviewDetail)(w, r)
 	case r.Method == "POST" && strings.HasPrefix(path, "/access-review-items/") && strings.HasSuffix(path, "/decision"):
 		s.require("access_review.decide", s.reviewDecision)(w, r)
 	case r.Method == "GET" && path == "/audit":
 		s.require("audit.read", s.audit)(w, r)
 	case r.Method == "GET" && path == "/evidence":
 		s.require("evidence.read", s.evidence)(w, r)
+	case r.Method == "GET" && path == "/reports":
+		s.require("evidence.read", s.reports)(w, r)
+	case r.Method == "POST" && strings.HasPrefix(path, "/reports/offboarding/"):
+		s.require("evidence.read", s.generateOffboardingReport)(w, r)
+	case r.Method == "GET" && strings.HasPrefix(path, "/reports/offboarding/") && strings.HasSuffix(path, ".pdf"):
+		s.require("evidence.read", s.offboardingPDF)(w, r)
+	case r.Method == "GET" && path == "/users":
+		s.require("user.manage", s.users)(w, r)
+	case r.Method == "POST" && path == "/users":
+		s.require("user.manage", s.createUser)(w, r)
+	case r.Method == "GET" && path == "/settings":
+		s.require("settings.manage", s.settings)(w, r)
+	case r.Method == "PATCH" && path == "/settings":
+		s.require("settings.manage", s.updateSettings)(w, r)
 	default:
 		writeError(w, 404, "NOT_FOUND", "The requested resource was not found.", requestID(r))
 	}
@@ -400,7 +458,14 @@ func (s *Server) person(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"person": p, "identities": accounts})
+	related, err := s.personRelated(r.Context(), getSession(r).OrganizationID, id)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	related["person"] = p
+	related["identities"] = accounts
+	writeJSON(w, 200, related)
 }
 func (s *Server) connectors(w http.ResponseWriter, r *http.Request) {
 	items, err := s.DB.ListConnectors(r.Context(), getSession(r).OrganizationID)
@@ -415,6 +480,7 @@ func (s *Server) createConnector(w http.ResponseWriter, r *http.Request) {
 		Name, Type, BaseURL, Environment, Credential string
 		Capabilities                                 []string
 		WriteEnabled                                 bool
+		Configuration                                map[string]any
 	}
 	if !decodeJSON(w, r, &in, 64<<10) {
 		return
@@ -452,17 +518,22 @@ func (s *Server) createConnector(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "INVALID_CONNECTOR_URL", "LDAP base URL must use ldap or ldaps without embedded credentials, query or fragment.", requestID(r))
 			return
 		}
+		if err := validateLDAPConfiguration(in.Configuration); err != nil {
+			writeError(w, 400, "INVALID_LDAP_CONFIGURATION", err.Error(), requestID(r))
+			return
+		}
 	}
 	org := getSession(r).OrganizationID
 	id := uuid.NewString()
 	caps, _ := json.Marshal(in.Capabilities)
+	configuration, _ := json.Marshal(in.Configuration)
 	tx, err := s.DB.Pool.Begin(r.Context())
 	if err != nil {
 		s.internal(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	_, err = tx.Exec(r.Context(), `INSERT INTO identity_connectors(id,organization_id,name,type,base_url,environment,write_enabled,capabilities) VALUES($1,$2,$3,$4,nullif($5,''),$6,$7,$8)`, id, org, in.Name, in.Type, in.BaseURL, in.Environment, in.WriteEnabled, caps)
+	_, err = tx.Exec(r.Context(), `INSERT INTO identity_connectors(id,organization_id,name,type,base_url,environment,write_enabled,capabilities,configuration) VALUES($1,$2,$3,$4,nullif($5,''),$6,$7,$8,$9)`, id, org, in.Name, in.Type, in.BaseURL, in.Environment, in.WriteEnabled, caps, configuration)
 	if err == nil && in.Credential != "" {
 		var encrypted string
 		encrypted, err = s.Secrets.Encrypt([]byte(in.Credential))
@@ -486,7 +557,7 @@ func (s *Server) syncConnector(w http.ResponseWriter, r *http.Request) {
 	var result assurance.SyncResult
 	err := runBounded(r.Context(), s.SyncPool, func(ctx context.Context) error {
 		var syncErr error
-		result, syncErr = s.Assurance.SyncSCIM(ctx, session.OrganizationID, id, requestID(r))
+		result, syncErr = s.Assurance.SyncConnector(ctx, session.OrganizationID, id, requestID(r))
 		return syncErr
 	})
 	if err != nil {
@@ -499,7 +570,7 @@ func (s *Server) syncConnector(w http.ResponseWriter, r *http.Request) {
 func (s *Server) testConnector(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/connectors/"), "/test")
 	session := getSession(r)
-	if err := s.Assurance.TestSCIMConnection(r.Context(), session.OrganizationID, id); err != nil {
+	if err := s.Assurance.TestConnection(r.Context(), session.OrganizationID, id); err != nil {
 		writeError(w, 502, "CONNECTOR_TEST_FAILED", "The expected connector endpoint could not be authenticated and read.", requestID(r))
 		return
 	}
@@ -674,11 +745,28 @@ func writeRows(w http.ResponseWriter, rows pgx.Rows, keys []string) {
 		}
 		item := map[string]any{}
 		for i, k := range keys {
-			item[k] = values[i]
+			item[k] = normalizeDBValue(values[i])
 		}
 		items = append(items, item)
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func normalizeDBValue(value any) any {
+	switch typed := value.(type) {
+	case [16]byte:
+		return uuid.UUID(typed).String()
+	case []byte:
+		if json.Valid(typed) {
+			var decoded any
+			if json.Unmarshal(typed, &decoded) == nil {
+				return decoded
+			}
+		}
+		return string(typed)
+	default:
+		return value
+	}
 }
 func (s *Server) lifecycleError(w http.ResponseWriter, r *http.Request, err error) {
 	if strings.Contains(err.Error(), "FORBIDDEN_STATE") {

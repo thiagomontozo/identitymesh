@@ -38,6 +38,15 @@ paths:
       summary: Confirm TOTP enrollment
       parameters: [{$ref: '#/components/parameters/CSRF'}]
       responses: {'204': {description: MFA enabled}, '400': {$ref: '#/components/responses/Error'}}
+  /auth/sessions:
+    get:
+      summary: List the current user's active sessions
+      responses: {'200': {description: Active sessions}}
+  /auth/sessions/{id}:
+    delete:
+      summary: Revoke one active session belonging to the current user
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'204': {description: Session revoked}, '404': {$ref: '#/components/responses/Error'}}
   /dashboard:
     get:
       summary: Identity Assurance Overview metrics
@@ -66,6 +75,20 @@ paths:
       summary: Start typed connector discovery
       parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
       responses: {'200': {description: Sync result}, '502': {$ref: '#/components/responses/Error'}}
+  /connectors/{id}:
+    get:
+      summary: Read connector configuration with its credential redacted
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses: {'200': {description: Connector detail}}
+    patch:
+      summary: Update validated connector settings or rotate its encrypted credential
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Updated}, '400': {$ref: '#/components/responses/Error'}}
+  /connectors/{id}/syncs:
+    get:
+      summary: List connector synchronization history
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}]
+      responses: {'200': {description: Synchronization history}}
   /connectors/{id}/test:
     post:
       summary: Authenticate and perform one bounded read from the expected endpoint; never writes
@@ -77,7 +100,48 @@ paths:
       parameters: [{$ref: '#/components/parameters/CSRF'}]
       requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, properties: {file: {type: string, format: binary}}, required: [file]}}}}
       responses: {'200': {description: Preview}, '413': {$ref: '#/components/responses/Error'}}
+  /csv-import/apply:
+    post:
+      summary: Re-validate and apply an explicitly confirmed authoritative CSV
+      parameters: [{$ref: '#/components/parameters/CSRF'}]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [file, sourceConnectorId, confirmed], properties: {file: {type: string, format: binary}, sourceConnectorId: {type: string, format: uuid}, confirmed: {type: boolean, const: true}}}}}}
+      responses: {'200': {description: Import applied}, '409': {$ref: '#/components/responses/Error'}}
+  /identities:
+    get:
+      summary: List normalized identity accounts with connector and person links
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}]
+      responses: {'200': {description: Identity accounts}}
+  /correlation-candidates:
+    get:
+      summary: List reviewable deterministic-correlation candidates
+      responses: {'200': {description: Candidates}}
+  /correlation-candidates/{id}/accept:
+    post:
+      summary: Accept a candidate transactionally and create an audited manual link
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Accepted}, '409': {$ref: '#/components/responses/Error'}}
+  /correlation-candidates/{id}/reject:
+    post:
+      summary: Reject a candidate transactionally
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Rejected}}
+  /applications:
+    get: {summary: List applications and account counts, responses: {'200': {description: Applications}}}
+    post: {summary: Register an application against a connector, parameters: [{$ref: '#/components/parameters/CSRF'}], responses: {'201': {description: Created}}}
+  /entitlements:
+    get: {summary: List observed entitlements, responses: {'200': {description: Entitlements}}}
+  /access-grants:
+    get: {summary: List normalized observed access grants, responses: {'200': {description: Access grants}}}
+  /reconciliation:
+    get: {summary: List expected-to-observed reconciliation runs, responses: {'200': {description: Reconciliation runs}}}
+  /findings:
+    get: {summary: List explainable identity findings, responses: {'200': {description: Findings}}}
+  /findings/{id}:
+    patch: {summary: Update a finding workflow state, parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}], responses: {'200': {description: Updated}}}
   /lifecycle-cases:
+    get:
+      summary: List lifecycle cases and verification status
+      responses: {'200': {description: Lifecycle cases}}
     post:
       summary: Create a draft per-person lifecycle case
       parameters: [{$ref: '#/components/parameters/CSRF'}]
@@ -103,6 +167,11 @@ paths:
       summary: Execute approved actions then verify observed state
       parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
       responses: {'200': {description: Verification result}, '409': {$ref: '#/components/responses/Error'}}
+  /lifecycle-cases/{id}/cancel:
+    post:
+      summary: Cancel a case that has not started and skip its pending actions
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'200': {description: Cancelled}, '409': {$ref: '#/components/responses/Error'}}
   /lifecycle-cases/{id}/events:
     get:
       summary: Stream lifecycle progress over SSE
@@ -113,6 +182,11 @@ paths:
       summary: Record review decision without direct provider mutation
       parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
       responses: {'201': {description: Decision recorded}}
+  /access-reviews:
+    get: {summary: List access-review campaigns, responses: {'200': {description: Campaigns}}}
+    post: {summary: Create and start an ALL_ACTIVE_GRANTS campaign, parameters: [{$ref: '#/components/parameters/CSRF'}], responses: {'201': {description: Campaign created}}}
+  /access-reviews/{id}:
+    get: {summary: Read campaign items and recorded decisions, parameters: [{$ref: '#/components/parameters/ID'}], responses: {'200': {description: Campaign detail}}}
   /evidence:
     get:
       summary: List tenant evidence
@@ -123,6 +197,24 @@ paths:
       summary: List tenant audit events
       parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}]
       responses: {'200': {description: Audit page}}
+  /reports:
+    get: {summary: List generated assurance report artifacts, responses: {'200': {description: Reports}}}
+  /reports/offboarding/{id}:
+    post:
+      summary: Generate and audit an offboarding verification report artifact
+      parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
+      responses: {'201': {description: Report artifact created}, '409': {$ref: '#/components/responses/Error'}}
+  /reports/offboarding/{id}.pdf:
+    get:
+      summary: Download a deterministic hashed offboarding verification PDF
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses: {'200': {description: PDF report, content: {application/pdf: {schema: {type: string, format: binary}}}}, '409': {$ref: '#/components/responses/Error'}}
+  /users:
+    get: {summary: List administrative users and roles, responses: {'200': {description: Users}}}
+    post: {summary: Create an administrative user with selected roles, parameters: [{$ref: '#/components/parameters/CSRF'}], responses: {'201': {description: User created}}}
+  /settings:
+    get: {summary: Read organization retention and trusted-domain settings, responses: {'200': {description: Settings}}}
+    patch: {summary: Update organization settings and audit the change, parameters: [{$ref: '#/components/parameters/CSRF'}], responses: {'200': {description: Updated}}}
 components:
   securitySchemes:
     cookieSession: {type: apiKey, in: cookie, name: identitymesh_session}
@@ -132,8 +224,8 @@ components:
     Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
     Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
   schemas:
-    LoginRequest: {type: object, required: [email, password], additionalProperties: false, properties: {email: {type: string, format: email}, password: {type: string, minLength: 12}}}
-    ConnectorInput: {type: object, required: [name, type], properties: {name: {type: string}, type: {enum: [CSV_AUTHORITATIVE_SOURCE, SCIM_2_0, LDAP_DIRECTORY]}, baseURL: {type: string, format: uri}, environment: {type: string}, credential: {type: string, writeOnly: true}, writeEnabled: {type: boolean, default: false}, capabilities: {type: array, items: {type: string}}}}
+    LoginRequest: {type: object, required: [email, password], additionalProperties: false, properties: {email: {type: string, format: email}, password: {type: string, minLength: 12}, totp: {type: string, pattern: '^[0-9]{6}$'}}}
+    ConnectorInput: {type: object, required: [name, type], properties: {name: {type: string}, type: {enum: [CSV_AUTHORITATIVE_SOURCE, SCIM_2_0, LDAP_DIRECTORY]}, baseURL: {type: string, format: uri}, environment: {type: string}, credential: {type: string, writeOnly: true}, writeEnabled: {type: boolean, default: false}, capabilities: {type: array, items: {type: string}}, configuration: {type: object, description: Administratively validated connector-specific settings}}}
     LifecycleStatus: {type: string, enum: [PRE_HIRE, ACTIVE, LEAVE, SUSPENDED, TERMINATED, UNKNOWN]}
     VerificationStatus: {type: string, enum: [VERIFIED, PARTIALLY_VERIFIED, INCONCLUSIVE, FAILED]}
     Error: {type: object, required: [error], properties: {error: {type: object, required: [code, message, requestId], properties: {code: {type: string}, message: {type: string}, requestId: {type: string}}}}}

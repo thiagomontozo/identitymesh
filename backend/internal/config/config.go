@@ -23,6 +23,8 @@ type Config struct {
 	MaxCSVBytes          int64
 	BootstrapEmail       string
 	BootstrapPassword    string
+	WebhookURL           string
+	WebhookSecret        string
 }
 
 func Load() (Config, error) {
@@ -37,6 +39,8 @@ func Load() (Config, error) {
 		MaxCSVBytes:        envInt64("IDENTITYMESH_MAX_CSV_BYTES", 10<<20),
 		BootstrapEmail:     os.Getenv("IDENTITYMESH_BOOTSTRAP_ADMIN_EMAIL"),
 		BootstrapPassword:  os.Getenv("IDENTITYMESH_BOOTSTRAP_ADMIN_PASSWORD"),
+		WebhookURL:         os.Getenv("IDENTITYMESH_WEBHOOK_URL"),
+		WebhookSecret:      os.Getenv("IDENTITYMESH_WEBHOOK_SECRET"),
 	}
 	c.SecureCookies, _ = strconv.ParseBool(env("IDENTITYMESH_SECURE_COOKIES", "true"))
 	c.RequirePrivilegedMFA, _ = strconv.ParseBool(env("IDENTITYMESH_REQUIRE_MFA_FOR_PRIVILEGED_ROLES", "false"))

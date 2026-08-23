@@ -41,6 +41,16 @@ func New(cfg Config) (*Client, error) {
 	}
 	return &Client{cfg: cfg}, nil
 }
+
+// TestConnection validates dialing and bind credentials without performing discovery.
+func (c *Client) TestConnection(ctx context.Context) error {
+	conn, err := c.dial(ctx)
+	if err != nil {
+		return err
+	}
+	conn.Close()
+	return nil
+}
 func safeFilter(v string) bool {
 	return v != "" && strings.HasPrefix(v, "(") && strings.HasSuffix(v, ")") && !strings.ContainsAny(v, "\x00\r\n")
 }

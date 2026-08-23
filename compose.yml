@@ -26,6 +26,8 @@ services:
       IDENTITYMESH_REQUIRE_MFA_FOR_PRIVILEGED_ROLES: "false"
       IDENTITYMESH_BOOTSTRAP_ADMIN_EMAIL: ${IDENTITYMESH_BOOTSTRAP_ADMIN_EMAIL:-admin@example.test}
       IDENTITYMESH_BOOTSTRAP_ADMIN_PASSWORD: ${IDENTITYMESH_BOOTSTRAP_ADMIN_PASSWORD:-identitymesh-demo-password}
+      IDENTITYMESH_WEBHOOK_URL: ${IDENTITYMESH_WEBHOOK_URL:-}
+      IDENTITYMESH_WEBHOOK_SECRET: ${IDENTITYMESH_WEBHOOK_SECRET:-}
     ports: ["8080:8080"]
     depends_on: {postgres: {condition: service_healthy}}
     healthcheck: {test: ["CMD", "/app/identitymesh-healthcheck"], interval: 10s, timeout: 3s, retries: 10, start_period: 10s}
