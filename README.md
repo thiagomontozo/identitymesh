@@ -1,5 +1,7 @@
 # IdentityMesh
 
+[![CI](https://github.com/thiagomontozo/identitymesh/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thiagomontozo/identitymesh/actions/workflows/ci.yml)
+
 > IdentityMesh correlates identities across connected systems, reconciles access state and verifies whether offboarding actions actually removed known access.
 
 **Current status: Experimental**
