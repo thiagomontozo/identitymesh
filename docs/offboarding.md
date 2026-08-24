@@ -7,4 +7,4 @@ flowchart TB
   E --> R[Reconcile provider] --> V[Verify observed state] --> EV[Create evidence]
 ```
 
-A plan is centered on one person. Writable SCIM identities with declared capability receive `DISABLE_ACCOUNT`; already-disabled or read-only identities receive `VERIFY_DISABLED`; unsupported/manual systems receive `MANUAL_REVIEW`. v0.1 has no destructive delete and no mass-disable action.
+A plan is centered on one person. Writable SCIM, Entra, Okta, Google and configured LDAP identities with declared capability receive `DISABLE_ACCOUNT`; GitHub can receive `REMOVE_MEMBERSHIP`; already-disabled/read-only identities receive `VERIFY_DISABLED`; unsupported/manual systems receive `MANUAL_REVIEW`. There is no destructive delete or mass-disable action.

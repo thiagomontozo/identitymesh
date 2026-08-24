@@ -1,5 +1,5 @@
 # ADR 015: LDAP is read-only in v0.1
 
-Status: Accepted
+Status: Superseded by ADR 020
 
-LDAP discovery adds important internal-directory visibility, while safe cross-directory mutation semantics vary substantially. v0.1 discovers users, groups and memberships but exposes no write method.
+LDAP originally shipped read-only because mutation semantics vary by directory. ADR 020 adds only explicit, controlled and post-write-verified strategies; arbitrary mutation remains prohibited.

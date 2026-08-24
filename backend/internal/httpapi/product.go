@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	authn "github.com/thiagomontozo/identitymesh/backend/internal/auth"
+	"github.com/thiagomontozo/identitymesh/backend/internal/connectors/nativehttp"
 	"github.com/thiagomontozo/identitymesh/backend/internal/connectors/scim"
 	"github.com/thiagomontozo/identitymesh/backend/internal/csvsource"
 	"github.com/thiagomontozo/identitymesh/backend/internal/reports"
@@ -91,7 +92,42 @@ func validateLDAPConfiguration(values map[string]any) error {
 	if page, ok := values["pageSize"].(float64); ok && (page < 1 || page > 5000) {
 		return errors.New("LDAP pageSize must be between 1 and 5000")
 	}
+	if strategy := stringConfig(values, "disableStrategy"); strategy != "" && strategy != "PPOLICY_LOCK" && strategy != "ACTIVE_DIRECTORY_UAC" {
+		return errors.New("LDAP disableStrategy must be PPOLICY_LOCK or ACTIVE_DIRECTORY_UAC")
+	}
+	if attribute := stringConfig(values, "membershipAttribute"); attribute != "" && attribute != "member" && attribute != "uniqueMember" && attribute != "memberUid" {
+		return errors.New("LDAP membershipAttribute must be member, uniqueMember or memberUid")
+	}
 	return nil
+}
+
+func validateLDAPWriteConfiguration(values map[string]any, capabilities []string) error {
+	if contains(capabilities, "DISABLE_ACCOUNT") && stringConfig(values, "disableStrategy") == "" {
+		return errors.New("LDAP DISABLE_ACCOUNT requires an explicit disableStrategy")
+	}
+	if contains(capabilities, "REMOVE_MEMBERSHIP") && stringConfig(values, "membershipAttribute") == "" {
+		return errors.New("LDAP REMOVE_MEMBERSHIP requires an explicit membershipAttribute")
+	}
+	return nil
+}
+
+func validateNativeConfiguration(connectorType string, values map[string]any) error {
+	switch connectorType {
+	case "GOOGLE_WORKSPACE":
+		if customer := stringConfig(values, "customer"); customer == "" || strings.ContainsAny(customer, "/?#\\\x00\r\n") {
+			return errors.New("Google Workspace customer is required")
+		}
+	case "GITHUB":
+		if organization := stringConfig(values, "organization"); organization == "" || strings.ContainsAny(organization, "/?#\\\x00\r\n") {
+			return errors.New("GitHub organization is required")
+		}
+	}
+	return nil
+}
+
+func validateNativeURL(baseURL string, allowHTTP bool, timeout time.Duration) error {
+	_, err := nativehttp.New(baseURL, http.Header{}, allowHTTP, timeout)
+	return err
 }
 
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
@@ -563,8 +599,9 @@ func (s *Server) updateConnector(w http.ResponseWriter, r *http.Request) {
 	}
 	session := getSession(r)
 	var typ string
-	var existingCapabilities []byte
-	if err := s.DB.Pool.QueryRow(r.Context(), `SELECT type,capabilities FROM identity_connectors WHERE organization_id=$1 AND id=$2`, session.OrganizationID, id).Scan(&typ, &existingCapabilities); errors.Is(err, pgx.ErrNoRows) {
+	var existingCapabilities, existingConfiguration []byte
+	var existingWriteEnabled bool
+	if err := s.DB.Pool.QueryRow(r.Context(), `SELECT type,capabilities,configuration,write_enabled FROM identity_connectors WHERE organization_id=$1 AND id=$2`, session.OrganizationID, id).Scan(&typ, &existingCapabilities, &existingConfiguration, &existingWriteEnabled); errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, 404, "CONNECTOR_NOT_FOUND", "The connector was not found.", requestID(r))
 		return
 	} else if err != nil {
@@ -584,14 +621,26 @@ func (s *Server) updateConnector(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if in.BaseURL != "" && contains([]string{"ENTRA_ID", "OKTA", "GOOGLE_WORKSPACE", "GITHUB"}, typ) {
+		if err := validateNativeURL(in.BaseURL, s.Assurance.AllowHTTP, s.Assurance.Timeout); err != nil {
+			writeError(w, 400, "INVALID_CONNECTOR_URL", err.Error(), requestID(r))
+			return
+		}
+	}
 	if typ == "LDAP_DIRECTORY" && in.Configuration != nil {
 		if err := validateLDAPConfiguration(in.Configuration); err != nil {
 			writeError(w, 400, "INVALID_LDAP_CONFIGURATION", err.Error(), requestID(r))
 			return
 		}
 	}
-	if in.WriteEnabled != nil && *in.WriteEnabled && typ != "SCIM_2_0" {
-		writeError(w, 400, "WRITE_NOT_SUPPORTED", "LDAP and CSV connectors cannot be write-enabled.", requestID(r))
+	if contains([]string{"ENTRA_ID", "OKTA", "GOOGLE_WORKSPACE", "GITHUB"}, typ) && in.Configuration != nil {
+		if err := validateNativeConfiguration(typ, in.Configuration); err != nil {
+			writeError(w, 400, "INVALID_CONNECTOR_CONFIGURATION", err.Error(), requestID(r))
+			return
+		}
+	}
+	if in.WriteEnabled != nil && *in.WriteEnabled && !contains([]string{"SCIM_2_0", "LDAP_DIRECTORY", "ENTRA_ID", "OKTA", "GOOGLE_WORKSPACE", "GITHUB"}, typ) {
+		writeError(w, 400, "WRITE_NOT_SUPPORTED", "This connector type cannot be write-enabled.", requestID(r))
 		return
 	}
 	if in.SyncInterval != "" && !contains([]string{"MANUAL", "HOURLY", "DAILY"}, in.SyncInterval) {
@@ -600,12 +649,14 @@ func (s *Server) updateConnector(w http.ResponseWriter, r *http.Request) {
 	}
 	effectiveCapabilities := []string{}
 	_ = json.Unmarshal(existingCapabilities, &effectiveCapabilities)
+	effectiveConfiguration := map[string]any{}
+	_ = json.Unmarshal(existingConfiguration, &effectiveConfiguration)
 	var caps any = nil
 	if in.Capabilities != nil {
 		allowed := []string{"DISCOVER_USERS", "DISCOVER_GROUPS", "DISCOVER_MEMBERSHIPS", "DISCOVER_ENTITLEMENTS", "DISABLE_ACCOUNT", "ENABLE_ACCOUNT", "REMOVE_MEMBERSHIP", "ADD_MEMBERSHIP"}
 		seen := map[string]bool{}
 		for _, capability := range in.Capabilities {
-			if !contains(allowed, capability) || seen[capability] {
+			if !contains(allowed, capability) || !connectorCapabilityAllowed(typ, capability) || seen[capability] {
 				writeError(w, 400, "INVALID_CONNECTOR_CAPABILITY", "Connector capabilities must be known and unique.", requestID(r))
 				return
 			}
@@ -615,9 +666,22 @@ func (s *Server) updateConnector(w http.ResponseWriter, r *http.Request) {
 		caps = raw
 		effectiveCapabilities = in.Capabilities
 	}
-	if in.WriteEnabled != nil && *in.WriteEnabled && !contains(effectiveCapabilities, "DISABLE_ACCOUNT") {
-		writeError(w, 400, "WRITE_CAPABILITY_REQUIRED", "Write enablement requires DISABLE_ACCOUNT capability.", requestID(r))
+	if in.WriteEnabled != nil && *in.WriteEnabled && !contains(effectiveCapabilities, "DISABLE_ACCOUNT") && !contains(effectiveCapabilities, "REMOVE_MEMBERSHIP") {
+		writeError(w, 400, "WRITE_CAPABILITY_REQUIRED", "Write enablement requires a supported write capability.", requestID(r))
 		return
+	}
+	if in.Configuration != nil {
+		effectiveConfiguration = in.Configuration
+	}
+	effectiveWriteEnabled := existingWriteEnabled
+	if in.WriteEnabled != nil {
+		effectiveWriteEnabled = *in.WriteEnabled
+	}
+	if typ == "LDAP_DIRECTORY" && effectiveWriteEnabled {
+		if err := validateLDAPWriteConfiguration(effectiveConfiguration, effectiveCapabilities); err != nil {
+			writeError(w, 400, "INVALID_LDAP_WRITE_CONFIGURATION", err.Error(), requestID(r))
+			return
+		}
 	}
 	var cfg any = nil
 	if in.Configuration != nil {
@@ -635,7 +699,7 @@ func (s *Server) updateConnector(w http.ResponseWriter, r *http.Request) {
 		cipher, e := s.Secrets.Encrypt([]byte(in.Credential))
 		err = e
 		if err == nil {
-			_, err = tx.Exec(r.Context(), `INSERT INTO connector_credentials(organization_id,connector_id,ciphertext) VALUES($1,$2,$3) ON CONFLICT(connector_id) DO UPDATE SET ciphertext=EXCLUDED.ciphertext,key_version=connector_credentials.key_version+1,updated_at=now()`, session.OrganizationID, id, cipher)
+			_, err = tx.Exec(r.Context(), `INSERT INTO connector_credentials(organization_id,connector_id,ciphertext,provider) VALUES($1,$2,$3,$4) ON CONFLICT(connector_id) DO UPDATE SET ciphertext=EXCLUDED.ciphertext,provider=EXCLUDED.provider,key_version=connector_credentials.key_version+1,updated_at=now()`, session.OrganizationID, id, cipher, secretProviderName(s.Secrets))
 		}
 	}
 	if err == nil {

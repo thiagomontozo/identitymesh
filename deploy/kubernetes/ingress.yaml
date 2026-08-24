@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: identitymesh
+  annotations: {nginx.ingress.kubernetes.io/proxy-body-size: 10m}
+spec:
+  tls: [{hosts: [identitymesh.example.com], secretName: identitymesh-tls}]
+  rules:
+    - host: identitymesh.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: frontend, port: {name: http}}}

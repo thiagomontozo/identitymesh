@@ -1,9 +1,19 @@
 # Connectors
 
-Connectors declare discovery and mutation capabilities. New connectors start read-only; an administrator must separately enable writes. The browser cannot supply arbitrary paths, HTTP methods, JSON operations, shell commands or per-action URLs.
+Every connector has a fixed administrative origin, explicit discovery/mutation capabilities and `writeEnabled=false` by default. The browser cannot choose arbitrary paths, methods, JSON bodies, LDAP attributes, scripts or per-action URLs. HTTP clients require HTTPS outside development/test, block link-local and metadata targets, reject cross-origin redirects, bound response size/time/retries and honor `Retry-After` for safe reads.
 
-Implemented types are `CSV_AUTHORITATIVE_SOURCE`, `SCIM_2_0`, and read-only `LDAP_DIRECTORY`. Future provider-specific types are architectural roadmap items, not advertised as functional integrations.
+| Type | Discovery | Controlled offboarding write |
+|---|---|---|
+| CSV authoritative | People import after preview/confirm | None |
+| SCIM 2.0 | Users, groups, membership, pagination | `active=false` PATCH, then GET |
+| LDAP/LDAPS | Users, groups, membership, paging | ppolicy/AD disable or membership removal, then read |
+| Microsoft Entra ID | Graph users, groups, members, pagination | `accountEnabled=false`, then GET |
+| Okta | Users, groups, members, Link pagination | Suspend lifecycle action, then GET |
+| Google Workspace | Directory users, groups, members, page tokens | `suspended=true`, then GET |
+| GitHub | Organization members, teams, team members | Remove organization membership, then GET membership |
 
-The administrative UI and API can create, validate, test and synchronize SCIM and LDAP connectors. LDAP configuration includes fixed bind DN, search base, user/group filters, paging and TLS server name; the password is encrypted separately and is never returned. CSV connectors support a mandatory preview, re-validation and explicit confirm/apply operation.
+Provider access tokens are service credentials issued with the least privilege by the provider/operator and rotated outside IdentityMesh. Tokens are encrypted using the configured SecretStore and never returned by the API. Test Connection performs one bounded read and never exercises a write.
 
-Connector failures are isolated to their runs. Previously observed accounts are retained and become stale; a failed or partial discovery never means an absent account was deleted.
+Sync failure retains prior observations as stale data. An incomplete/failed response never means an account disappeared. Native connectors share normalized `User`, `Group` and membership contracts so correlation, findings and verification apply consistently without pretending provider semantics are identical.
+
+See [SCIM](scim.md), [LDAP](ldap.md) and [native providers](native-connectors.md).

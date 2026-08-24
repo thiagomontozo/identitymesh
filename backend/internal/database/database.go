@@ -65,9 +65,14 @@ func (s *Store) Migrate(ctx context.Context, dir string) error {
 		}
 		version := strings.TrimSuffix(entry.Name(), ".sql")
 		var applied bool
-		err = conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='schema_migrations') AND EXISTS (SELECT 1 FROM schema_migrations WHERE version=$1)", version).Scan(&applied)
-		if err != nil {
-			applied = false
+		var migrationsTableExists bool
+		if err = conn.QueryRow(ctx, "SELECT to_regclass('public.schema_migrations') IS NOT NULL").Scan(&migrationsTableExists); err != nil {
+			return err
+		}
+		if migrationsTableExists {
+			if err = conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=$1)", version).Scan(&applied); err != nil {
+				return err
+			}
 		}
 		if applied {
 			continue
@@ -96,9 +101,19 @@ func (s *Store) Bootstrap(ctx context.Context, email, password string) error {
 	}
 	defer tx.Rollback(ctx)
 	var orgID, userID uuid.UUID
-	err = tx.QueryRow(ctx, "INSERT INTO organizations(name) VALUES('IdentityMesh Demo') ON CONFLICT DO NOTHING RETURNING id").Scan(&orgID)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(4815162343)`); err != nil {
+		return err
+	}
+	err = tx.QueryRow(ctx, `SELECT id,organization_id FROM users WHERE lower(email)=lower($1)`, email).Scan(&userID, &orgID)
+	if err == nil {
+		return tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	err = tx.QueryRow(ctx, "SELECT id FROM organizations WHERE name='IdentityMesh Demo' ORDER BY created_at LIMIT 1").Scan(&orgID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, "SELECT id FROM organizations WHERE name='IdentityMesh Demo' LIMIT 1").Scan(&orgID)
+		err = tx.QueryRow(ctx, "INSERT INTO organizations(name) VALUES('IdentityMesh Demo') RETURNING id").Scan(&orgID)
 	}
 	if err != nil {
 		return err
@@ -145,24 +160,16 @@ func (s *Store) CreateSession(ctx context.Context, base Session, tokenHash, csrf
 func (s *Store) SessionByToken(ctx context.Context, token string) (Session, error) {
 	h := sha256.Sum256([]byte(token))
 	var out Session
-	err := s.Pool.QueryRow(ctx, "SELECT s.id,s.organization_id,s.user_id,u.email,u.display_name,s.csrf_hash,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND NOT u.disabled", h[:]).Scan(&out.ID, &out.OrganizationID, &out.UserID, &out.Email, &out.DisplayName, &out.CSRFHash, &out.ExpiresAt)
-	if err != nil {
-		return out, err
-	}
-	rows, err := s.Pool.Query(ctx, "SELECT r.name FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.organization_id=$1 AND ur.user_id=$2", out.OrganizationID, out.UserID)
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var role string
-		if err = rows.Scan(&role); err != nil {
-			return out, err
-		}
-		out.Roles = append(out.Roles, role)
-	}
-	_, _ = s.Pool.Exec(ctx, "UPDATE sessions SET last_seen_at=now() WHERE id=$1", out.ID)
-	return out, rows.Err()
+	err := s.Pool.QueryRow(ctx, `
+SELECT s.id,s.organization_id,s.user_id,u.email,u.display_name,s.csrf_hash,s.expires_at,
+       coalesce(array_agg(r.name ORDER BY r.name) FILTER (WHERE r.name IS NOT NULL),'{}')
+FROM sessions s
+JOIN users u ON u.id=s.user_id AND u.organization_id=s.organization_id
+LEFT JOIN user_roles ur ON ur.organization_id=s.organization_id AND ur.user_id=s.user_id
+LEFT JOIN roles r ON r.id=ur.role_id
+WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND NOT u.disabled
+GROUP BY s.id,u.id`, h[:]).Scan(&out.ID, &out.OrganizationID, &out.UserID, &out.Email, &out.DisplayName, &out.CSRFHash, &out.ExpiresAt, &out.Roles)
+	return out, err
 }
 func (s *Store) RevokeSession(ctx context.Context, orgID, sessionID string) error {
 	tag, err := s.Pool.Exec(ctx, "UPDATE sessions SET revoked_at=now() WHERE organization_id=$1 AND id=$2 AND revoked_at IS NULL", orgID, sessionID)

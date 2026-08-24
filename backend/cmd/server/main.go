@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/thiagomontozo/identitymesh/backend/internal/database"
 	"github.com/thiagomontozo/identitymesh/backend/internal/httpapi"
 	"github.com/thiagomontozo/identitymesh/backend/internal/notifier"
+	"github.com/thiagomontozo/identitymesh/backend/internal/ratelimit"
 	"github.com/thiagomontozo/identitymesh/backend/internal/scheduler"
 	"github.com/thiagomontozo/identitymesh/backend/internal/secure"
 	"github.com/thiagomontozo/identitymesh/backend/internal/workers"
@@ -29,7 +31,7 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	db, err := database.Open(ctx, cfg.DatabaseURL)
+	db, err := openDatabase(ctx, cfg.DatabaseURL, 60*time.Second, log)
 	if err != nil {
 		log.Error("database unavailable", "error", err.Error())
 		os.Exit(1)
@@ -47,7 +49,12 @@ func main() {
 		log.Error("bootstrap failed", "error", err.Error())
 		os.Exit(1)
 	}
-	secrets, err := secure.NewAESGCMStore(cfg.MasterKey)
+	var secrets secure.SecretStore
+	if cfg.SecretProvider == "VAULT_TRANSIT" {
+		secrets, err = secure.NewVaultTransitStore(cfg.VaultAddress, cfg.VaultToken, cfg.VaultNamespace, cfg.VaultTransitMount, cfg.VaultTransitKey, cfg.Environment != "production", cfg.SyncTimeout)
+	} else {
+		secrets, err = secure.NewAESGCMStore(cfg.MasterKey)
+	}
 	if err != nil {
 		log.Error("secret store failed", "error", err.Error())
 		os.Exit(1)
@@ -68,13 +75,42 @@ func main() {
 	actionPool.Start(ctx, cfg.MaxConcurrentActs)
 	defer syncPool.Stop()
 	defer actionPool.Stop()
+	distributedQueue, err := workers.NewDistributedQueue(db.Pool, cfg.WorkerID, cfg.WorkerLease, cfg.WorkerPollInterval, log)
+	if err != nil {
+		log.Error("distributed job queue failed", "error", err.Error())
+		os.Exit(1)
+	}
+	_ = distributedQueue.Register("CONNECTOR_SYNC", func(jobCtx context.Context, job workers.DistributedJob) error {
+		var payload struct{ ConnectorID, RequestID string }
+		if decodeErr := json.Unmarshal(job.Payload, &payload); decodeErr != nil {
+			return decodeErr
+		}
+		return runPoolJob(jobCtx, syncPool, func(workerCtx context.Context) error {
+			_, syncErr := svc.SyncConnector(workerCtx, job.OrganizationID, payload.ConnectorID, payload.RequestID)
+			return syncErr
+		})
+	})
+	_ = distributedQueue.Register("LIFECYCLE_EXECUTE", func(jobCtx context.Context, job workers.DistributedJob) error {
+		var payload struct{ CaseID, ActorUserID string }
+		if decodeErr := json.Unmarshal(job.Payload, &payload); decodeErr != nil {
+			return decodeErr
+		}
+		return runPoolJob(jobCtx, actionPool, func(workerCtx context.Context) error {
+			_, executeErr := svc.ExecuteAndVerify(workerCtx, job.OrganizationID, payload.CaseID, payload.ActorUserID)
+			return executeErr
+		})
+	})
+	if cfg.JobMode == "DISTRIBUTED" {
+		distributedQueue.Start(ctx, cfg.MaxConcurrentSyncs+cfg.MaxConcurrentActs)
+		defer distributedQueue.Wait()
+	}
 	maintenance := scheduler.Scheduler{DB: db.Pool, Name: "access-review-deadlines", Interval: time.Minute, Task: func(taskCtx context.Context) error {
 		_, taskErr := db.Pool.Exec(taskCtx, `UPDATE access_review_campaigns SET status='OVERDUE' WHERE status='ACTIVE' AND due_at IS NOT NULL AND due_at<now()`)
 		return taskErr
 	}}
 	go maintenance.Run(ctx)
 	scheduledSyncs := scheduler.Scheduler{DB: db.Pool, Name: "connector-synchronization", Interval: time.Minute, Task: func(taskCtx context.Context) error {
-		rows, queryErr := db.Pool.Query(taskCtx, `SELECT organization_id,id FROM identity_connectors WHERE enabled AND read_enabled AND type IN ('SCIM_2_0','LDAP_DIRECTORY') AND last_sync_status NOT IN ('QUEUED','RUNNING') AND ((sync_interval='HOURLY' AND (last_sync_at IS NULL OR last_sync_at<now()-interval '1 hour')) OR (sync_interval='DAILY' AND (last_sync_at IS NULL OR last_sync_at<now()-interval '1 day')))`)
+		rows, queryErr := db.Pool.Query(taskCtx, `SELECT organization_id,id FROM identity_connectors WHERE enabled AND read_enabled AND type IN ('SCIM_2_0','LDAP_DIRECTORY','ENTRA_ID','OKTA','GOOGLE_WORKSPACE','GITHUB') AND last_sync_status NOT IN ('QUEUED','RUNNING') AND ((sync_interval='HOURLY' AND (last_sync_at IS NULL OR last_sync_at<now()-interval '1 hour')) OR (sync_interval='DAILY' AND (last_sync_at IS NULL OR last_sync_at<now()-interval '1 day')))`)
 		if queryErr != nil {
 			return queryErr
 		}
@@ -94,18 +130,28 @@ func main() {
 			if updateErr != nil || tag.RowsAffected() == 0 {
 				continue
 			}
-			job := item
-			if submitErr := syncPool.Submit(func(workerCtx context.Context) error {
-				_, syncErr := svc.SyncConnector(workerCtx, job.orgID, job.connectorID, uuid.NewString())
-				return syncErr
-			}); submitErr != nil {
+			requestID := uuid.NewString()
+			var submitErr error
+			if cfg.JobMode == "DISTRIBUTED" {
+				_, _, submitErr = distributedQueue.Enqueue(taskCtx, item.orgID, "CONNECTOR_SYNC", map[string]string{"connectorId": item.connectorID, "requestId": requestID}, "scheduled-sync:"+item.connectorID+":"+time.Now().UTC().Format("200601021504"), 50)
+			} else {
+				job := item
+				submitErr = syncPool.Submit(func(workerCtx context.Context) error {
+					_, syncErr := svc.SyncConnector(workerCtx, job.orgID, job.connectorID, requestID)
+					return syncErr
+				})
+			}
+			if submitErr != nil {
 				_, _ = db.Pool.Exec(taskCtx, `UPDATE identity_connectors SET last_sync_status='PARTIAL',updated_at=now() WHERE organization_id=$1 AND id=$2`, item.orgID, item.connectorID)
 			}
 		}
 		return nil
 	}}
 	go scheduledSyncs.Run(ctx)
-	api := httpapi.New(db, svc, secrets, log, cfg.AllowedOrigin, cfg.SecureCookies, cfg.RequirePrivilegedMFA, cfg.MaxCSVBytes, syncPool, actionPool)
+	rateLimiter := ratelimit.Postgres{DB: db.Pool}
+	rateLimitCleanup := scheduler.Scheduler{DB: db.Pool, Name: "rate-limit-cleanup", Interval: 5 * time.Minute, Task: rateLimiter.Cleanup}
+	go rateLimitCleanup.Run(ctx)
+	api := httpapi.New(db, svc, secrets, log, cfg.AllowedOrigin, cfg.SecureCookies, cfg.RequirePrivilegedMFA, cfg.MaxCSVBytes, syncPool, actionPool, distributedQueue, cfg.JobMode, rateLimiter, cfg.TrustedProxyCIDRs)
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second}
 	go func() {
 		log.Info("IdentityMesh API started", "address", cfg.HTTPAddr, "environment", cfg.Environment)
@@ -121,4 +167,50 @@ func main() {
 		log.Error("graceful shutdown timed out", "error", err.Error())
 	}
 	log.Info("IdentityMesh stopped")
+}
+
+func openDatabase(parent context.Context, databaseURL string, timeout time.Duration, log *slog.Logger) (*database.Store, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	delay := 250 * time.Millisecond
+	for {
+		store, err := database.Open(ctx, databaseURL)
+		if err == nil {
+			return store, nil
+		}
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		log.Warn("database connection pending", "retryIn", delay.String(), "error", err.Error())
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, err
+		case <-timer.C:
+		}
+		if delay < 5*time.Second {
+			delay *= 2
+			if delay > 5*time.Second {
+				delay = 5 * time.Second
+			}
+		}
+	}
+}
+
+func runPoolJob(ctx context.Context, pool *workers.Pool, job workers.Job) error {
+	done := make(chan error, 1)
+	if err := pool.Submit(func(workerCtx context.Context) error {
+		err := job(workerCtx)
+		done <- err
+		return err
+	}); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-done:
+		return err
+	}
 }

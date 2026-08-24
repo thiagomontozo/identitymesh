@@ -2,45 +2,41 @@
 
 [![CI](https://github.com/thiagomontozo/identitymesh/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thiagomontozo/identitymesh/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/thiagomontozo/identitymesh/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/thiagomontozo/identitymesh/actions/workflows/codeql.yml)
-[![Status: Experimental](https://img.shields.io/badge/status-experimental-f59e0b)](#current-limitations)
+[![Load Validation](https://github.com/thiagomontozo/identitymesh/actions/workflows/load.yml/badge.svg?branch=main)](https://github.com/thiagomontozo/identitymesh/actions/workflows/load.yml)
+[![Container Delivery](https://github.com/thiagomontozo/identitymesh/actions/workflows/release.yml/badge.svg)](https://github.com/thiagomontozo/identitymesh/actions/workflows/release.yml)
+[![Status: Production Candidate](https://img.shields.io/badge/status-production_candidate-0f766e)](#production-deployment)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2563eb.svg)](LICENSE)
-[![Go 1.24](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=0b1f2a)](https://react.dev/)
 [![TypeScript 5.8](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-enabled-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-ready-326CE5?logo=kubernetes&logoColor=white)](deploy/kubernetes)
 
 > IdentityMesh correlates identities across connected systems, reconciles access state and verifies whether offboarding actions actually removed known access.
 
-**Current status: Experimental**
+**Current status: Production deployment candidate**
 
-Disabling one account is not the same as proving that a person no longer has access. IdentityMesh is an identity lifecycle and access assurance platform built to answer which digital identities belong to a person, where access remains active, which providers confirmed a change, and what evidence supports the conclusion.
+Disabling one account is not the same as proving that a person no longer has access. IdentityMesh answers which digital identities belong to a person, where access remains active, which providers confirmed a change and what evidence supports the conclusion.
 
 > IdentityMesh verifies access within connected and successfully reconciled systems. It cannot prove the absence of accounts or access in systems that are not connected, observable or successfully synchronized.
 
 ## Why IdentityMesh?
 
-Provisioning asks whether a disable request was sent. Identity assurance asks whether every relevant known identity was checked, whether its observed state changed, what remains unresolved, and whether the result is fresh enough to trust. IdentityMesh keeps the human `Person` separate from provider `IdentityAccount` records and never treats a matching display name as sufficient identity evidence.
+Provisioning asks whether a disable request was sent. Identity assurance asks whether every relevant known identity was checked, whether its observed state changed, what remains unresolved and whether the evidence is fresh enough to trust. IdentityMesh keeps the human `Person` separate from provider `IdentityAccount` records and never treats a matching display name as sufficient identity evidence.
 
 ## Key features
 
-- Multi-tenant people and distributed identity account inventory.
-- CSV authoritative person source with preview, validation, limits and idempotent keys.
-- Generic SCIM 2.0 user/group discovery, pagination and controlled account disable.
-- Read-only LDAP user, group and membership discovery.
-- Deterministic correlation, manual candidates, orphan and duplicate-account findings.
-- Per-person offboarding plans, explicit approval, idempotent actions and bounded execution.
-- Provider re-read after writes, honest `VERIFIED`, `PARTIALLY_VERIFIED`, `INCONCLUSIVE` and `FAILED` results.
-- Verification snapshots, downloadable PDF reports with SHA-256 integrity metadata, audit events and access review decisions.
-- Argon2id passwords, revocable server sessions, CSRF protection, RBAC, working TOTP enrollment/login and AES-256-GCM connector secrets.
-- Complete workspaces for identities, applications/access, connectors, reconciliation, lifecycle, reviews, findings, evidence, reports, users, audit and settings.
-- Scheduled SCIM/LDAP synchronization with PostgreSQL advisory locking, bounded workers, in-app notifications and optional signed webhooks.
-
-## v0.1 completion
-
-IdentityMesh v0.1 is functionally complete as an experimental identity-assurance core. Every primary navigation area is backed by tenant-scoped APIs rather than placeholder pages. The browser supports authoritative CSV preview/confirm/apply, SCIM and read-only LDAP administration, manual correlation decisions, person-centered offboarding, access-review decisions, user/session/MFA administration, retention settings and assurance-report export.
-
-The completed synthetic acceptance path imports an authoritative person, discovers SCIM and LDAP identities, correlates accounts, detects orphan and ambiguous identities, requires plan approval, disables SCIM accounts, re-reads providers, records evidence and produces a `VERIFIED` snapshot and PDF. Failure, provider-unavailable and post-write-state-mismatch scenarios remain required tests and never produce a false `VERIFIED` result.
+- Tenant-isolated people, identities, access, evidence, audit and administration.
+- CSV authoritative source with preview, validation, size/row limits and idempotent apply.
+- Generic SCIM 2.0 plus native Microsoft Entra ID, Okta, Google Workspace and GitHub connectors.
+- LDAP/LDAPS discovery plus controlled ppolicy/Active Directory disable and membership removal strategies.
+- Deterministic correlation, manual candidates, orphan and duplicate-account findings; never name-only auto-link.
+- Per-person offboarding plans, explicit approval, durable idempotent actions and provider re-read after writes.
+- Honest `VERIFIED`, `PARTIALLY_VERIFIED`, `INCONCLUSIVE` and `FAILED` results with snapshots, evidence and PDF reports.
+- Argon2id, revocable cookie sessions, CSRF, RBAC, TOTP and AES-256-GCM or Vault Transit connector secrets.
+- PostgreSQL-backed distributed jobs, leases and rate limits for horizontal API replicas.
+- Kubernetes profile with non-root containers, probes, disruption budgets, autoscaling and network policy.
 
 ## Identity Assurance Model
 
@@ -57,22 +53,22 @@ flowchart LR
 ```mermaid
 flowchart TB
   U[Administrators and Reviewers] --> F[React + TypeScript + Vite]
-  F --> API[IdentityMesh Go API]
+  F --> API[IdentityMesh Go API replicas]
   API --> CORE[Correlation · Reconciliation · Lifecycle · Access Reviews]
-  API --> PG[(PostgreSQL)]
+  API --> PG[(PostgreSQL state · jobs · rate limits)]
+  API --> VAULT[Vault Transit / HSM boundary]
   CORE --> CL[Typed Connector Layer]
-  CL --> CSV[CSV Authoritative Source]
+  CL --> CSV[CSV]
   CL --> SCIM[SCIM 2.0]
-  CL --> LDAP[LDAP read-only]
-  SCIM --> IS[Connected Identity Systems]
-  LDAP --> IS
+  CL --> LDAP[LDAP / LDAPS]
+  CL --> NATIVE[Entra · Okta · Google · GitHub]
 ```
 
-IdentityMesh is a modular monolith. Provider calls occur outside database transactions; local intent is committed first, the remote action is attempted, and a later observation establishes evidence.
+IdentityMesh is a modular monolith that can run multiple control-plane replicas. Provider calls occur outside database transactions: local intent is committed, a leased worker performs the typed remote action, the result is persisted, and a new observation establishes evidence.
 
 ## Identity Correlation
 
-Exact immutable employee identifiers and exact unique emails in administratively trusted domains are high-confidence signals. Normalized usernames plus other consistent attributes may produce medium confidence. Names alone never auto-link; they create reviewable candidates. Confidence is categorical and accompanied by human-readable reasons, not a pseudo-scientific score.
+Exact immutable employee identifiers and exact unique emails in administratively trusted domains are high-confidence signals. Normalized usernames plus consistent attributes may produce medium confidence. Names alone never auto-link; they create reviewable candidates. Confidence is categorical and explained, not a pseudo-scientific score.
 
 ## Offboarding Verification
 
@@ -83,11 +79,13 @@ flowchart TB
   CA --> RE[Post-action Reconciliation] --> OS[Observed State] --> EV[Evidence] --> VS[Verification Status]
 ```
 
-Plans use `DISABLE_ACCOUNT`, `REMOVE_MEMBERSHIP`, `VERIFY_DISABLED`, or `MANUAL_REVIEW`. Destructive account deletion is intentionally absent from v0.1.
+Plans use `DISABLE_ACCOUNT`, `REMOVE_MEMBERSHIP`, `VERIFY_DISABLED` or `MANUAL_REVIEW`. Destructive account deletion and organization-wide bulk disable are intentionally absent.
 
 ## Connectors
 
-The implemented connectors are CSV authoritative source, generic SCIM 2.0 and read-only LDAP. Connectors declare capabilities explicitly and start with `writeEnabled=false`. Entra ID, Okta, Google Workspace, GitHub and other provider-specific integrations are roadmap items only.
+Implemented connectors are CSV authoritative source, generic SCIM 2.0, LDAP/LDAPS, Microsoft Entra ID, Okta, Google Workspace and GitHub. Every connector declares capabilities and starts with `writeEnabled=false`. LDAP mutation requires an explicit safe strategy; GitHub removes organization membership, while Entra, Okta and Google use native reversible suspension/disable semantics.
+
+Provider access tokens/service credentials are issued and rotated by the operator, encrypted through the selected secret store and never returned to the browser. See [connectors](docs/connectors.md).
 
 ## Quick start
 
@@ -96,13 +94,11 @@ The implemented connectors are CSV authoritative source, generic SCIM 2.0 and re
 3. Run `docker compose up --build`.
 4. Open `http://localhost:5173` and sign in with the bootstrap administrator.
 
-Do not reuse development credentials in another environment. Production should provision secrets outside the repository and use HTTPS with secure cookies.
+Do not reuse development credentials elsewhere. Production requires HTTPS, secure cookies, `DISTRIBUTED` jobs and externally provisioned secrets.
 
 ## Docker development
 
-`compose.yml` runs PostgreSQL, the Go API and the React frontend; its `demo` profile adds two TEST/DEMO-only SCIM providers. `compose.test.yml` runs synthetic PostgreSQL, both SCIM providers and OpenLDAP. No test contacts a real directory or SaaS tenant.
-
-PowerShell helpers live in `scripts/`. `scripts/integration.ps1` always tears down the test stack and its dedicated volumes.
+`compose.yml` runs PostgreSQL, the Go API and React frontend; its `demo` profile adds TEST/DEMO-only SCIM providers. `compose.test.yml` runs isolated PostgreSQL, SCIM, OpenLDAP and Vault. No test contacts a real identity system.
 
 ## Testing
 
@@ -111,32 +107,38 @@ go test ./backend/...
 docker compose -f compose.test.yml up -d --build --wait
 go test -tags=integration ./backend/...
 docker compose -f compose.test.yml down -v --remove-orphans
+./scripts/load.ps1
 ```
 
-Frontend checks run with `npm ci`, `npm test`, and `npm run build`. See [testing](docs/testing.md) for the synthetic acceptance matrix.
+Frontend gates include lint, TypeScript checking, Vitest and production build. The horizontal load gate sends 10,000 authenticated requests through a load balancer to two API replicas and enforces latency and error thresholds. See [testing](docs/testing.md).
+
+## Production deployment
+
+The [Kubernetes profile](deploy/kubernetes) runs three API and two frontend replicas with rolling updates, disruption budgets, HPA, restricted security contexts, probes, TLS ingress and default-deny network policy. PostgreSQL and Vault are external operational dependencies whose HA, backup, restore, monitoring and credentials remain the deployer's responsibility.
+
+Set `IDENTITYMESH_SECRET_PROVIDER=VAULT_TRANSIT` for Vault-managed encryption. When an operator deploys Vault Enterprise with seal wrap backed by an HSM, IdentityMesh never receives the HSM key. This repository does not claim certification of a particular hardware appliance.
 
 ## Security
 
-Security-sensitive invariants include organization-scoped queries, backend authorization, Argon2id password hashing, hashed session tokens, CSRF validation, encrypted connector credentials, fixed connector origins, blocked metadata endpoints, explicit approval and post-write observation. Optional webhook notifications are fixed-origin, signed and redirect-restricted. See [security model](docs/security-model.md), [threat model](docs/threat-model.md), [notifications](docs/notifications.md), and [SECURITY.md](SECURITY.md).
+Security invariants include tenant-scoped queries, server-side authorization, fixed connector origins, metadata/link-local blocking, bounded HTTP behavior, write-disabled defaults, explicit approval, idempotency and post-write observation. See the [security model](docs/security-model.md), [threat model](docs/threat-model.md) and [SECURITY.md](SECURITY.md).
 
 ## Current limitations
 
-- Generic SCIM 2.0 is the only writable connector; LDAP is read-only.
-- No native Entra ID, Okta, Google Workspace, GitHub or other SaaS connector.
-- No automatic discovery of systems that were not configured.
+- Systems must be configured; IdentityMesh cannot discover unknown systems.
 - No destructive account delete or bulk lifecycle operation.
-- Single control-plane process, process-local rate limiting and bounded in-process workers; scheduled jobs use PostgreSQL advisory locks but there is no distributed queue.
-- Local AES-GCM secret store only; no HSM or managed secret store integration.
-- No production-scale load validation or compliance certification.
+- Native provider credentials must currently be issued and rotated outside IdentityMesh; embedded OAuth/service-account issuance is not included.
+- LDAP writes are restricted to documented ppolicy/Active Directory and membership strategies, not arbitrary LDAP modification.
+- Vault/HSM availability, unseal, replication and hardware certification remain operator concerns and were not hardware-lab certified here.
+- The repeatable 10,000-request gate is not a substitute for deployment-specific soak, failover and peak-volume testing.
+- No compliance, legal-admissibility or complete-visibility certification.
 
-See [limitations](docs/limitations.md) for scope details.
+See [limitations](docs/limitations.md).
 
 ## Roadmap
 
-- **v0.1 — Identity Assurance Core:** people, CSV, SCIM, LDAP, correlation, reconciliation, offboarding, evidence and basic access reviews.
-- **v0.2 — SaaS Ecosystem:** Entra ID, Okta, Google Workspace, GitHub and richer SaaS connectors.
-- **v0.3 — Enterprise Lifecycle:** onboarding, role change, distributed runners and advanced approvals.
-- **v0.4 — Infrastructure Assurance Integration:** optional NetScope/InfraGraph evidence correlation.
+- **Delivered foundation:** assurance core, native Entra/Okta/Google/GitHub, controlled LDAP writes, distributed jobs/rate limits, Vault Transit, Kubernetes and load validation.
+- **Next:** managed token issuance/rotation, additional SaaS connectors, advanced approvals and delegated administration.
+- **Later:** onboarding/role changes, regional runner placement and longer environment-specific performance programs.
 
 ## Contributing
 

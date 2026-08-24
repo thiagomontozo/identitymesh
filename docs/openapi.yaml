@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: IdentityMesh API
-  version: 0.1.0
-  description: Experimental identity lifecycle and access assurance API.
+  version: 1.0.0
+  description: Horizontally deployable identity lifecycle and access assurance API.
 servers:
   - url: /api/v1
 security:
@@ -74,7 +74,7 @@ paths:
     post:
       summary: Start typed connector discovery
       parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
-      responses: {'200': {description: Sync result}, '502': {$ref: '#/components/responses/Error'}}
+      responses: {'200': {description: Inline development sync result}, '202': {description: Durable distributed sync job queued}, '502': {$ref: '#/components/responses/Error'}}
   /connectors/{id}:
     get:
       summary: Read connector configuration with its credential redacted
@@ -164,9 +164,9 @@ paths:
       responses: {'200': {description: Approved}, '403': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
   /lifecycle-cases/{id}/execute:
     post:
-      summary: Execute approved actions then verify observed state
+      summary: Queue approved actions for execution and post-action verification
       parameters: [{$ref: '#/components/parameters/ID'}, {$ref: '#/components/parameters/CSRF'}]
-      responses: {'200': {description: Verification result}, '409': {$ref: '#/components/responses/Error'}}
+      responses: {'200': {description: Inline development verification result}, '202': {description: Durable distributed lifecycle job queued}, '409': {$ref: '#/components/responses/Error'}}
   /lifecycle-cases/{id}/cancel:
     post:
       summary: Cancel a case that has not started and skip its pending actions
@@ -225,7 +225,7 @@ components:
     Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
   schemas:
     LoginRequest: {type: object, required: [email, password], additionalProperties: false, properties: {email: {type: string, format: email}, password: {type: string, minLength: 12}, totp: {type: string, pattern: '^[0-9]{6}$'}}}
-    ConnectorInput: {type: object, required: [name, type], properties: {name: {type: string}, type: {enum: [CSV_AUTHORITATIVE_SOURCE, SCIM_2_0, LDAP_DIRECTORY]}, baseURL: {type: string, format: uri}, environment: {type: string}, credential: {type: string, writeOnly: true}, writeEnabled: {type: boolean, default: false}, capabilities: {type: array, items: {type: string}}, configuration: {type: object, description: Administratively validated connector-specific settings}}}
+    ConnectorInput: {type: object, required: [name, type], properties: {name: {type: string}, type: {enum: [CSV_AUTHORITATIVE_SOURCE, SCIM_2_0, LDAP_DIRECTORY, ENTRA_ID, OKTA, GOOGLE_WORKSPACE, GITHUB]}, baseURL: {type: string, format: uri}, environment: {type: string}, credential: {type: string, writeOnly: true}, writeEnabled: {type: boolean, default: false}, capabilities: {type: array, items: {enum: [DISCOVER_USERS, DISCOVER_GROUPS, DISCOVER_MEMBERSHIPS, DISCOVER_ENTITLEMENTS, DISABLE_ACCOUNT, ENABLE_ACCOUNT, REMOVE_MEMBERSHIP, ADD_MEMBERSHIP]}}, configuration: {type: object, description: Administratively validated connector-specific settings; LDAP writes require an explicit safe strategy}}}
     LifecycleStatus: {type: string, enum: [PRE_HIRE, ACTIVE, LEAVE, SUSPENDED, TERMINATED, UNKNOWN]}
     VerificationStatus: {type: string, enum: [VERIFIED, PARTIALLY_VERIFIED, INCONCLUSIVE, FAILED]}
     Error: {type: object, required: [error], properties: {error: {type: object, required: [code, message, requestId], properties: {code: {type: string}, message: {type: string}, requestId: {type: string}}}}}
