@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: {go-version: '1.26.6', cache: true}
       - name: Formatting
         run: test -z "$(gofmt -l backend test/mock-scim)"
@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: {go-version: '1.26.6', cache: true}
       - name: Start synthetic providers
         run: docker compose -f compose.test.yml up -d --build --wait
