@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run 10,000-request horizontal validation
         run: docker compose -f compose.load.yml up --build --abort-on-container-exit --exit-code-from load-test
       - name: Logs
