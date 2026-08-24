@@ -1,17 +1,17 @@
 # Roadmap
 
-## v0.1 — Identity Assurance Core
+## Delivered production foundation
 
-People, CSV authoritative source, SCIM, LDAP, correlation, reconciliation, offboarding, verification, evidence and basic access reviews.
+Identity assurance core, CSV, generic SCIM, LDAP/LDAPS controlled writes, native Entra ID/Okta/Google Workspace/GitHub, deterministic correlation, reconciliation, offboarding, verification/evidence, access reviews, PostgreSQL distributed jobs/rate limits, Vault Transit, Kubernetes and repeatable horizontal load validation.
 
-## v0.2 — SaaS Ecosystem
+## Next
 
-Native Entra ID, Okta, Google Workspace, GitHub and richer SaaS connectors.
+Provider workload-identity/OAuth token issuance and automated rotation, Slack/AWS IAM Identity Center/GitLab/Atlassian connectors, advanced approval graphs, delegated administration and richer operational telemetry.
 
-## v0.3 — Enterprise Lifecycle
+## Enterprise lifecycle
 
-Onboarding, role changes, distributed connector runners, advanced approvals and delegated administration.
+Onboarding, role changes, policy-driven entitlements, regional connector runner placement and extended soak/failover/cardinality programs.
 
-## v0.4 — Infrastructure Assurance Integration
+## Infrastructure assurance integration
 
-Optional NetScope and InfraGraph integration plus additional evidence correlation. Roadmap items are not implemented or represented as working today.
+Optional NetScope and InfraGraph evidence correlation. Roadmap items are not represented as working features.

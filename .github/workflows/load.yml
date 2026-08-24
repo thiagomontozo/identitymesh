@@ -1,0 +1,32 @@
+name: Load Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: load-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  horizontal-load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run 10,000-request horizontal validation
+        run: docker compose -f compose.load.yml up --build --abort-on-container-exit --exit-code-from load-test
+      - name: Logs
+        if: failure()
+        run: docker compose -f compose.load.yml logs --no-color
+      - name: Cleanup
+        if: always()
+        run: docker compose -f compose.load.yml down -v --remove-orphans

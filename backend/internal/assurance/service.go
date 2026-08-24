@@ -12,7 +12,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/thiagomontozo/identitymesh/backend/internal/connectors/entra"
+	githubconnector "github.com/thiagomontozo/identitymesh/backend/internal/connectors/github"
+	"github.com/thiagomontozo/identitymesh/backend/internal/connectors/googleworkspace"
 	ldapconnector "github.com/thiagomontozo/identitymesh/backend/internal/connectors/ldap"
+	"github.com/thiagomontozo/identitymesh/backend/internal/connectors/okta"
+	"github.com/thiagomontozo/identitymesh/backend/internal/connectors/provider"
 	"github.com/thiagomontozo/identitymesh/backend/internal/connectors/scim"
 	"github.com/thiagomontozo/identitymesh/backend/internal/correlation"
 	"github.com/thiagomontozo/identitymesh/backend/internal/csvsource"
@@ -77,6 +82,8 @@ func (s *Service) SyncConnector(ctx context.Context, orgID, connectorID, request
 			return SyncResult{}, err
 		}
 		return s.SyncLDAP(ctx, orgID, connectorID, requestID, cfg)
+	case "ENTRA_ID", "OKTA", "GOOGLE_WORKSPACE", "GITHUB":
+		return s.SyncNative(ctx, orgID, connectorID, requestID)
 	default:
 		return SyncResult{}, errors.New("connector type does not support remote synchronization")
 	}
@@ -101,6 +108,13 @@ func (s *Service) TestConnection(ctx context.Context, orgID, connectorID string)
 		}
 		return client.TestConnection(ctx)
 	}
+	if connectorType == "ENTRA_ID" || connectorType == "OKTA" || connectorType == "GOOGLE_WORKSPACE" || connectorType == "GITHUB" {
+		client, err := s.nativeClient(ctx, orgID, connectorID)
+		if err != nil {
+			return err
+		}
+		return client.TestConnection(ctx)
+	}
 	return errors.New("connector type has no remote connection to test")
 }
 
@@ -111,8 +125,8 @@ func (s *Service) ldapConfiguration(ctx context.Context, orgID, connectorID stri
 		return ldapconnector.Config{}, err
 	}
 	var values struct {
-		BindDN, SearchBase, UserFilter, GroupFilter, ServerName string
-		PageSize                                                uint32
+		BindDN, SearchBase, UserFilter, GroupFilter, ServerName, DisableStrategy, MembershipAttribute string
+		PageSize                                                                                      uint32
 	}
 	if err := json.Unmarshal(raw, &values); err != nil {
 		return ldapconnector.Config{}, errors.New("LDAP connector configuration is malformed")
@@ -121,7 +135,7 @@ func (s *Service) ldapConfiguration(ctx context.Context, orgID, connectorID stri
 	if err != nil {
 		return ldapconnector.Config{}, err
 	}
-	return ldapconnector.Config{URL: baseURL, BindDN: values.BindDN, Password: password, SearchBase: values.SearchBase, UserFilter: values.UserFilter, GroupFilter: values.GroupFilter, PageSize: values.PageSize, Timeout: s.Timeout, ServerName: values.ServerName}, nil
+	return ldapconnector.Config{URL: baseURL, BindDN: values.BindDN, Password: password, SearchBase: values.SearchBase, UserFilter: values.UserFilter, GroupFilter: values.GroupFilter, PageSize: values.PageSize, Timeout: s.Timeout, ServerName: values.ServerName, DisableStrategy: values.DisableStrategy, MembershipAttribute: values.MembershipAttribute}, nil
 }
 
 func first(values []string) string {
@@ -149,7 +163,8 @@ func ldapValues(attributes map[string][]string, name string) []string {
 	return nil
 }
 
-// SyncLDAP performs read-only discovery. LDAP has no mutating path in v0.1.
+// SyncLDAP performs discovery independently of whether explicitly configured
+// write capabilities are enabled.
 func (s *Service) SyncLDAP(ctx context.Context, orgID, connectorID, requestID string, cfg ldapconnector.Config) (SyncResult, error) {
 	var name string
 	var enabled, readEnabled bool
@@ -350,6 +365,120 @@ func (s *Service) SyncSCIM(ctx context.Context, orgID, connectorID, requestID st
 	return SyncResult{RunID: runID, AccountsDiscovered: len(users), GroupsDiscovered: len(groups), FindingsCreated: findings, Status: "SUCCEEDED"}, nil
 }
 
+func (s *Service) nativeClient(ctx context.Context, orgID, connectorID string) (provider.Client, error) {
+	var connectorType, baseURL string
+	var raw []byte
+	if err := s.DB.Pool.QueryRow(ctx, `SELECT type,coalesce(base_url,''),configuration FROM identity_connectors WHERE organization_id=$1 AND id=$2 AND type IN ('ENTRA_ID','OKTA','GOOGLE_WORKSPACE','GITHUB')`, orgID, connectorID).Scan(&connectorType, &baseURL, &raw); err != nil {
+		return nil, err
+	}
+	credential, err := s.connectorToken(ctx, orgID, connectorID)
+	if err != nil {
+		return nil, err
+	}
+	var configuration struct {
+		Customer     string `json:"customer"`
+		Organization string `json:"organization"`
+	}
+	if err = json.Unmarshal(raw, &configuration); err != nil {
+		return nil, errors.New("native connector configuration is malformed")
+	}
+	switch connectorType {
+	case "ENTRA_ID":
+		return entra.New(baseURL, credential, s.AllowHTTP, s.Timeout)
+	case "OKTA":
+		return okta.New(baseURL, credential, s.AllowHTTP, s.Timeout)
+	case "GOOGLE_WORKSPACE":
+		return googleworkspace.New(baseURL, credential, configuration.Customer, s.AllowHTTP, s.Timeout)
+	case "GITHUB":
+		return githubconnector.New(baseURL, credential, configuration.Organization, s.AllowHTTP, s.Timeout)
+	default:
+		return nil, errors.New("unsupported native connector type")
+	}
+}
+
+func (s *Service) SyncNative(ctx context.Context, orgID, connectorID, requestID string) (SyncResult, error) {
+	var name, connectorType string
+	var enabled, readEnabled bool
+	if err := s.DB.Pool.QueryRow(ctx, `SELECT name,type,enabled,read_enabled FROM identity_connectors WHERE organization_id=$1 AND id=$2 AND type IN ('ENTRA_ID','OKTA','GOOGLE_WORKSPACE','GITHUB')`, orgID, connectorID).Scan(&name, &connectorType, &enabled, &readEnabled); err != nil {
+		return SyncResult{}, err
+	}
+	if !enabled || !readEnabled {
+		return SyncResult{}, errors.New("connector discovery is disabled")
+	}
+	runID := uuid.NewString()
+	if _, err := s.DB.Pool.Exec(ctx, `INSERT INTO connector_syncs(id,organization_id,connector_id,trigger_type,status,request_id) VALUES($1,$2,$3,'MANUAL','RUNNING',$4)`, runID, orgID, connectorID, requestID); err != nil {
+		return SyncResult{}, err
+	}
+	if _, err := s.DB.Pool.Exec(ctx, `INSERT INTO reconciliation_runs(id,organization_id,connector_id,trigger_type,status) VALUES($1,$2,$3,'MANUAL','RUNNING')`, runID, orgID, connectorID); err != nil {
+		return SyncResult{}, err
+	}
+	client, err := s.nativeClient(ctx, orgID, connectorID)
+	if err != nil {
+		return s.failSync(ctx, orgID, connectorID, runID, "NATIVE_CONFIGURATION_ERROR", err)
+	}
+	users, err := client.ListUsers(ctx)
+	if err != nil {
+		return s.failSync(ctx, orgID, connectorID, runID, "NATIVE_DISCOVERY_FAILED", err)
+	}
+	groups, err := client.ListGroups(ctx)
+	if err != nil {
+		return s.failSync(ctx, orgID, connectorID, runID, "NATIVE_GROUP_DISCOVERY_FAILED", err)
+	}
+	tx, err := s.DB.Pool.Begin(ctx)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	seen := make([]string, 0, len(users))
+	for _, user := range users {
+		state := "DISABLED"
+		if user.Active {
+			state = "ACTIVE"
+		}
+		accountType := "HUMAN"
+		if user.Username == "" {
+			accountType = "UNKNOWN"
+		}
+		var accountID string
+		err = tx.QueryRow(ctx, `INSERT INTO identity_accounts(organization_id,connector_id,external_account_id,username,display_name,primary_email,employee_number,active_status,account_type,privileged,provider_updated_at,raw_attributes_summary) VALUES($1,$2,$3,$4,$5,nullif($6,''),nullif($7,''),$8,$9,$10,nullif($11::timestamptz,'0001-01-01T00:00:00Z'),jsonb_build_object('nativeProvider',$12::text,'externalId',$13::text)) ON CONFLICT(organization_id,connector_id,external_account_id) DO UPDATE SET username=EXCLUDED.username,display_name=EXCLUDED.display_name,primary_email=EXCLUDED.primary_email,employee_number=EXCLUDED.employee_number,active_status=EXCLUDED.active_status,account_type=EXCLUDED.account_type,privileged=EXCLUDED.privileged,provider_updated_at=EXCLUDED.provider_updated_at,last_seen_at=now(),missing_since=NULL,updated_at=now() RETURNING id`, orgID, connectorID, user.ID, user.Username, user.DisplayName, user.PrimaryEmail, user.EmployeeNumber, state, accountType, user.Privileged, user.UpdatedAt.UTC().Format(time.RFC3339), connectorType, user.ExternalID).Scan(&accountID)
+		if err != nil {
+			return SyncResult{}, err
+		}
+		seen = append(seen, accountID)
+	}
+	for _, group := range groups {
+		var entitlementID string
+		if err = tx.QueryRow(ctx, `INSERT INTO entitlements(organization_id,connector_id,external_id,name,type) VALUES($1,$2,$3,$4,'GROUP') ON CONFLICT(organization_id,connector_id,external_id) DO UPDATE SET name=EXCLUDED.name,last_seen_at=now() RETURNING id`, orgID, connectorID, group.ID, group.Name).Scan(&entitlementID); err != nil {
+			return SyncResult{}, err
+		}
+		for _, memberID := range group.Members {
+			if _, err = tx.Exec(ctx, `INSERT INTO access_grants(organization_id,identity_account_id,entitlement_id,source) SELECT $1,id,$2,$3 FROM identity_accounts WHERE organization_id=$1 AND connector_id=$4 AND external_account_id=$5 ON CONFLICT(organization_id,identity_account_id,entitlement_id) DO UPDATE SET active=true,last_seen_at=now()`, orgID, entitlementID, connectorType+"_GROUP", connectorID, memberID); err != nil {
+				return SyncResult{}, err
+			}
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE identity_accounts SET active_status='MISSING',missing_since=coalesce(missing_since,now()),updated_at=now() WHERE organization_id=$1 AND connector_id=$2 AND NOT(id=ANY($3::uuid[]))`, orgID, connectorID, seen); err != nil {
+		return SyncResult{}, err
+	}
+	findings, err := s.correlate(ctx, tx, orgID, connectorID)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE connector_syncs SET status='SUCCEEDED',completed_at=now(),accounts_discovered=$1,groups_discovered=$2,summary=jsonb_build_object('connector',$3::text,'nativeProvider',$4::text) WHERE organization_id=$5 AND id=$6`, len(users), len(groups), name, connectorType, orgID, runID); err != nil {
+		return SyncResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE identity_connectors SET last_sync_at=now(),last_sync_status='SUCCEEDED',updated_at=now() WHERE organization_id=$1 AND id=$2`, orgID, connectorID); err != nil {
+		return SyncResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE reconciliation_runs SET status='SUCCEEDED',completed_at=now(),accounts_discovered=$1,groups_discovered=$2,findings_created=$3,summary=jsonb_build_object('nativeProvider',$4::text,'stalePreservedOnFailure',true) WHERE organization_id=$5 AND id=$6`, len(users), len(groups), findings, connectorType, orgID, runID); err != nil {
+		return SyncResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return SyncResult{}, err
+	}
+	return SyncResult{RunID: runID, AccountsDiscovered: len(users), GroupsDiscovered: len(groups), FindingsCreated: findings, Status: "SUCCEEDED"}, nil
+}
+
 func (s *Service) TestSCIMConnection(ctx context.Context, orgID, connectorID string) error {
 	var baseURL string
 	if err := s.DB.Pool.QueryRow(ctx, `SELECT base_url FROM identity_connectors WHERE organization_id=$1 AND id=$2 AND type='SCIM_2_0' AND enabled`, orgID, connectorID).Scan(&baseURL); err != nil {
@@ -501,8 +630,10 @@ func (s *Service) PlanCase(ctx context.Context, orgID, caseID, userID string) ([
 		action := "MANUAL_REVIEW"
 		if state == "DISABLED" {
 			action = "VERIFY_DISABLED"
-		} else if typ == "SCIM_2_0" && write && strings.Contains(string(caps), "DISABLE_ACCOUNT") {
+		} else if containsConnectorType([]string{"SCIM_2_0", "ENTRA_ID", "OKTA", "GOOGLE_WORKSPACE", "LDAP_DIRECTORY"}, typ) && write && strings.Contains(string(caps), "DISABLE_ACCOUNT") {
 			action = "DISABLE_ACCOUNT"
+		} else if typ == "GITHUB" && write && strings.Contains(string(caps), "REMOVE_MEMBERSHIP") {
+			action = "REMOVE_MEMBERSHIP"
 		}
 		planned = append(planned, plannedAction{accountID: accountID, connectorID: connectorID, name: name, username: username, state: state, action: action, write: write})
 	}
@@ -533,6 +664,15 @@ func (s *Service) PlanCase(ctx context.Context, orgID, caseID, userID string) ([
 		return nil, err
 	}
 	return preview, nil
+}
+
+func containsConnectorType(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 func (s *Service) ApproveCase(ctx context.Context, orgID, caseID, userID string) error {
 	tx, err := s.DB.Pool.Begin(ctx)
@@ -590,28 +730,17 @@ func (s *Service) ExecuteAndVerify(ctx context.Context, orgID, caseID, userID st
 		}
 		outcome := "INCONCLUSIVE"
 		summary := "Manual system requires human review"
-		if a.typ == "DISABLE_ACCOUNT" {
-			token, e := s.connectorToken(ctx, orgID, a.connectorID)
-			var client *scim.Client
-			if e == nil {
-				client, e = scim.New(a.baseURL, token, s.AllowHTTP, s.Timeout)
-			}
-			if e == nil {
-				e = client.DisableUser(ctx, a.externalID)
-			}
-			if e == nil {
-				var observed scim.User
-				observed, e = client.GetUser(ctx, a.externalID)
-				if e == nil && !observed.Active {
-					outcome = "SUCCEEDED"
-					summary = "Provider was re-read and account was observed disabled"
-					if _, err = s.DB.Pool.Exec(ctx, `UPDATE identity_accounts SET active_status='DISABLED',last_seen_at=now(),updated_at=now() WHERE organization_id=$1 AND id=$2`, orgID, a.accountID); err != nil {
-						return "", err
-					}
-				} else if e == nil && observed.Active {
-					outcome = "FAILED"
-					summary = "Provider accepted the change but reconciliation still observed active=true"
+		if a.typ == "DISABLE_ACCOUNT" || a.typ == "REMOVE_MEMBERSHIP" {
+			disabled, e := s.executeRemoteAction(ctx, orgID, a.connectorID, a.connectorType, a.baseURL, a.externalID, a.typ)
+			if e == nil && disabled {
+				outcome = "SUCCEEDED"
+				summary = "Provider was re-read and access was observed disabled or removed"
+				if _, err = s.DB.Pool.Exec(ctx, `UPDATE identity_accounts SET active_status='DISABLED',last_seen_at=now(),updated_at=now() WHERE organization_id=$1 AND id=$2`, orgID, a.accountID); err != nil {
+					return "", err
 				}
+			} else if e == nil {
+				outcome = "FAILED"
+				summary = "Provider accepted the change but reconciliation still observed active access"
 			}
 			if e != nil {
 				outcome = "FAILED"
@@ -676,6 +805,54 @@ func (s *Service) ExecuteAndVerify(ctx context.Context, orgID, caseID, userID st
 		_ = s.Notifier.Notify(ctx, notifier.Event{OrganizationID: orgID, Type: "OFFBOARDING_" + string(result), Payload: map[string]any{"caseId": caseID, "verificationStatus": result}, OccurredAt: s.Clock.Now()})
 	}
 	return result, err
+}
+
+func (s *Service) executeRemoteAction(ctx context.Context, orgID, connectorID, connectorType, baseURL, externalID, actionType string) (bool, error) {
+	switch connectorType {
+	case "SCIM_2_0":
+		token, err := s.connectorToken(ctx, orgID, connectorID)
+		if err != nil {
+			return false, err
+		}
+		client, err := scim.New(baseURL, token, s.AllowHTTP, s.Timeout)
+		if err != nil {
+			return false, err
+		}
+		if err = client.DisableUser(ctx, externalID); err != nil {
+			return false, err
+		}
+		observed, err := client.GetUser(ctx, externalID)
+		return err == nil && !observed.Active, err
+	case "LDAP_DIRECTORY":
+		if actionType != "DISABLE_ACCOUNT" {
+			return false, errors.New("LDAP membership action requires an entitlement-scoped plan")
+		}
+		cfg, err := s.ldapConfiguration(ctx, orgID, connectorID)
+		if err != nil {
+			return false, err
+		}
+		client, err := ldapconnector.New(cfg)
+		if err != nil {
+			return false, err
+		}
+		if err = client.DisableUser(ctx, externalID); err != nil {
+			return false, err
+		}
+		observed, err := client.GetUser(ctx, externalID)
+		return err == nil && ldapconnector.IsDisabled(observed), err
+	case "ENTRA_ID", "OKTA", "GOOGLE_WORKSPACE", "GITHUB":
+		client, err := s.nativeClient(ctx, orgID, connectorID)
+		if err != nil {
+			return false, err
+		}
+		if err = client.DisableUser(ctx, externalID); err != nil {
+			return false, err
+		}
+		observed, err := client.GetUser(ctx, externalID)
+		return err == nil && !observed.Active, err
+	default:
+		return false, errors.New("connector does not support controlled remote actions")
+	}
 }
 
 func (s *Service) GetCase(ctx context.Context, orgID, caseID string) (map[string]any, error) {

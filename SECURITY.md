@@ -1,6 +1,6 @@
 # Security policy
 
-IdentityMesh is experimental. Do not deploy it as a production identity control plane without an independent security review, operational safeguards, TLS, protected keys and a tested recovery plan.
+IdentityMesh is a production deployment candidate. Every deployment still requires an environment-specific security review, least-privilege provider credentials, TLS, protected keys, monitoring and a tested recovery plan.
 
 Report suspected vulnerabilities privately through **GitHub Security Advisories** for this repository. Do not open a public issue containing exploit details, connector credentials, session data or personal information.
 

@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +26,7 @@ import (
 	"github.com/thiagomontozo/identitymesh/backend/internal/csvsource"
 	"github.com/thiagomontozo/identitymesh/backend/internal/database"
 	"github.com/thiagomontozo/identitymesh/backend/internal/domain"
+	"github.com/thiagomontozo/identitymesh/backend/internal/ratelimit"
 	"github.com/thiagomontozo/identitymesh/backend/internal/rbac"
 	"github.com/thiagomontozo/identitymesh/backend/internal/secure"
 	"github.com/thiagomontozo/identitymesh/backend/internal/workers"
@@ -50,19 +50,21 @@ type Server struct {
 	MaxCSVBytes          int64
 	SyncPool             *workers.Pool
 	ActionPool           *workers.Pool
-	limiter              *limiter
-}
-type limiter struct {
-	mu      sync.Mutex
-	entries map[string]rateEntry
-}
-type rateEntry struct {
-	start time.Time
-	count int
+	DistributedQueue     *workers.DistributedQueue
+	JobMode              string
+	RateLimiter          ratelimit.Limiter
+	trustedProxies       []*net.IPNet
 }
 
-func New(db *database.Store, svc *assurance.Service, secrets secure.SecretStore, log *slog.Logger, origin string, secureCookies, requirePrivilegedMFA bool, maxCSV int64, syncPool, actionPool *workers.Pool) *Server {
-	return &Server{DB: db, Assurance: svc, Secrets: secrets, Log: log, AllowedOrigin: origin, SecureCookies: secureCookies, RequirePrivilegedMFA: requirePrivilegedMFA, MaxCSVBytes: maxCSV, SyncPool: syncPool, ActionPool: actionPool, limiter: &limiter{entries: map[string]rateEntry{}}}
+func New(db *database.Store, svc *assurance.Service, secrets secure.SecretStore, log *slog.Logger, origin string, secureCookies, requirePrivilegedMFA bool, maxCSV int64, syncPool, actionPool *workers.Pool, distributedQueue *workers.DistributedQueue, jobMode string, distributedLimiter ratelimit.Limiter, trustedProxyCIDRs []string) *Server {
+	server := &Server{DB: db, Assurance: svc, Secrets: secrets, Log: log, AllowedOrigin: origin, SecureCookies: secureCookies, RequirePrivilegedMFA: requirePrivilegedMFA, MaxCSVBytes: maxCSV, SyncPool: syncPool, ActionPool: actionPool, DistributedQueue: distributedQueue, JobMode: jobMode, RateLimiter: distributedLimiter}
+	for _, value := range trustedProxyCIDRs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(value))
+		if err == nil {
+			server.trustedProxies = append(server.trustedProxies, network)
+		}
+	}
+	return server
 }
 
 func runBounded(ctx context.Context, pool *workers.Pool, job func(context.Context) error) error {
@@ -93,6 +95,26 @@ func privilegedRoles(roles []string) bool {
 		}
 	}
 	return false
+}
+
+func connectorCapabilityAllowed(connectorType, capability string) bool {
+	allowed := map[string]map[string]bool{
+		"CSV_AUTHORITATIVE_SOURCE": {},
+		"SCIM_2_0":                 {"DISCOVER_USERS": true, "DISCOVER_GROUPS": true, "DISCOVER_MEMBERSHIPS": true, "DISCOVER_ENTITLEMENTS": true, "DISABLE_ACCOUNT": true, "ENABLE_ACCOUNT": true, "REMOVE_MEMBERSHIP": true, "ADD_MEMBERSHIP": true},
+		"LDAP_DIRECTORY":           {"DISCOVER_USERS": true, "DISCOVER_GROUPS": true, "DISCOVER_MEMBERSHIPS": true, "DISCOVER_ENTITLEMENTS": true, "DISABLE_ACCOUNT": true, "REMOVE_MEMBERSHIP": true},
+		"ENTRA_ID":                 {"DISCOVER_USERS": true, "DISCOVER_GROUPS": true, "DISCOVER_MEMBERSHIPS": true, "DISCOVER_ENTITLEMENTS": true, "DISABLE_ACCOUNT": true},
+		"OKTA":                     {"DISCOVER_USERS": true, "DISCOVER_GROUPS": true, "DISCOVER_MEMBERSHIPS": true, "DISCOVER_ENTITLEMENTS": true, "DISABLE_ACCOUNT": true},
+		"GOOGLE_WORKSPACE":         {"DISCOVER_USERS": true, "DISCOVER_GROUPS": true, "DISCOVER_MEMBERSHIPS": true, "DISCOVER_ENTITLEMENTS": true, "DISABLE_ACCOUNT": true},
+		"GITHUB":                   {"DISCOVER_USERS": true, "DISCOVER_GROUPS": true, "DISCOVER_MEMBERSHIPS": true, "DISCOVER_ENTITLEMENTS": true, "REMOVE_MEMBERSHIP": true},
+	}
+	return allowed[connectorType][capability]
+}
+
+func secretProviderName(store secure.SecretStore) string {
+	if _, ok := store.(*secure.VaultTransitStore); ok {
+		return "VAULT_TRANSIT"
+	}
+	return "LOCAL_AES_GCM"
 }
 
 func (s *Server) Handler() http.Handler {
@@ -135,12 +157,18 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var migrated bool
-	_ = s.DB.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version='001_initial')").Scan(&migrated)
+	_ = s.DB.Pool.QueryRow(ctx, "SELECT count(*)=3 FROM schema_migrations WHERE version IN ('001_initial','002_product_completion','003_production_platform')").Scan(&migrated)
 	if !migrated {
 		writeError(w, 503, "MIGRATIONS_PENDING", "Database migrations are not current.", requestID(r))
 		return
 	}
-	writeJSON(w, 200, map[string]any{"status": "ready", "database": true, "migrations": true})
+	if checker, ok := s.Secrets.(secure.HealthChecker); ok {
+		if err := checker.Health(ctx); err != nil {
+			writeError(w, 503, "SECRET_STORE_NOT_READY", "The external secret store is unavailable.", requestID(r))
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{"status": "ready", "database": true, "migrations": true, "secretStore": true})
 }
 func (s *Server) authenticated(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -179,26 +207,58 @@ func (s *Server) csrf(next http.Handler) http.Handler {
 }
 func (s *Server) rate(limit int, window time.Duration, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if s.RateLimiter == nil {
+			writeError(w, http.StatusServiceUnavailable, "RATE_LIMITER_UNAVAILABLE", "Request protection is temporarily unavailable.", requestID(r))
+			return
+		}
+		key := s.clientIP(r) + ":" + r.URL.Path
+		if session, ok := r.Context().Value(sessionKey).(database.Session); ok && session.OrganizationID != "" {
+			key += ":" + session.OrganizationID + ":" + session.UserID
+		}
+		allowed, retry, err := s.RateLimiter.Allow(r.Context(), key, limit, window)
 		if err != nil {
-			host = r.RemoteAddr
+			s.Log.Error("distributed rate limiter unavailable", "requestId", requestID(r), "error", err.Error())
+			writeError(w, http.StatusServiceUnavailable, "RATE_LIMITER_UNAVAILABLE", "Request protection is temporarily unavailable.", requestID(r))
+			return
 		}
-		key := host + ":" + r.URL.Path
-		now := time.Now()
-		s.limiter.mu.Lock()
-		e := s.limiter.entries[key]
-		if e.start.IsZero() || now.Sub(e.start) > window {
-			e = rateEntry{start: now}
-		}
-		e.count++
-		s.limiter.entries[key] = e
-		s.limiter.mu.Unlock()
-		if e.count > limit {
+		if !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retry.Round(time.Second)/time.Second))))
 			writeError(w, 429, "RATE_LIMITED", "Too many requests. Try again later.", requestID(r))
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer := net.ParseIP(host)
+	if !s.isTrustedProxy(peer) {
+		return host
+	}
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for index := len(parts) - 1; index >= 0; index-- {
+		forwarded := net.ParseIP(strings.TrimSpace(parts[index]))
+		if forwarded == nil {
+			continue
+		}
+		if !s.isTrustedProxy(forwarded) {
+			return forwarded.String()
+		}
+	}
+	return host
+}
+
+func (s *Server) isTrustedProxy(ip net.IP) bool {
+	for _, network := range s.trustedProxies {
+		if ip != nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Email, Password, TOTP string }
@@ -485,25 +545,26 @@ func (s *Server) createConnector(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in, 64<<10) {
 		return
 	}
-	if in.Name == "" || !contains([]string{"CSV_AUTHORITATIVE_SOURCE", "SCIM_2_0", "LDAP_DIRECTORY"}, in.Type) {
+	if in.Name == "" || !contains([]string{"CSV_AUTHORITATIVE_SOURCE", "SCIM_2_0", "LDAP_DIRECTORY", "ENTRA_ID", "OKTA", "GOOGLE_WORKSPACE", "GITHUB"}, in.Type) {
 		writeError(w, 400, "INVALID_CONNECTOR", "Connector name and supported type are required.", requestID(r))
 		return
 	}
 	allowedCapabilities := []string{"DISCOVER_USERS", "DISCOVER_GROUPS", "DISCOVER_MEMBERSHIPS", "DISCOVER_ENTITLEMENTS", "DISABLE_ACCOUNT", "ENABLE_ACCOUNT", "REMOVE_MEMBERSHIP", "ADD_MEMBERSHIP"}
 	seenCapabilities := map[string]bool{}
 	for _, capability := range in.Capabilities {
-		if !contains(allowedCapabilities, capability) || seenCapabilities[capability] {
+		if !contains(allowedCapabilities, capability) || !connectorCapabilityAllowed(in.Type, capability) || seenCapabilities[capability] {
 			writeError(w, 400, "INVALID_CONNECTOR_CAPABILITY", "Connector capabilities must be known and unique.", requestID(r))
 			return
 		}
 		seenCapabilities[capability] = true
 	}
-	if in.WriteEnabled && in.Type != "SCIM_2_0" {
-		writeError(w, 400, "WRITE_NOT_SUPPORTED", "Only a capability-declared SCIM connector can be write-enabled in v0.1.", requestID(r))
+	writeTypes := []string{"SCIM_2_0", "LDAP_DIRECTORY", "ENTRA_ID", "OKTA", "GOOGLE_WORKSPACE", "GITHUB"}
+	if in.WriteEnabled && !contains(writeTypes, in.Type) {
+		writeError(w, 400, "WRITE_NOT_SUPPORTED", "This connector type cannot be write-enabled.", requestID(r))
 		return
 	}
-	if in.WriteEnabled && !seenCapabilities["DISABLE_ACCOUNT"] {
-		writeError(w, 400, "WRITE_CAPABILITY_REQUIRED", "Write enablement requires the explicit DISABLE_ACCOUNT capability in v0.1.", requestID(r))
+	if in.WriteEnabled && !seenCapabilities["DISABLE_ACCOUNT"] && !seenCapabilities["REMOVE_MEMBERSHIP"] {
+		writeError(w, 400, "WRITE_CAPABILITY_REQUIRED", "Write enablement requires an explicit supported write capability.", requestID(r))
 		return
 	}
 	if in.Type == "SCIM_2_0" {
@@ -522,6 +583,22 @@ func (s *Server) createConnector(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "INVALID_LDAP_CONFIGURATION", err.Error(), requestID(r))
 			return
 		}
+		if in.WriteEnabled {
+			if err := validateLDAPWriteConfiguration(in.Configuration, in.Capabilities); err != nil {
+				writeError(w, 400, "INVALID_LDAP_WRITE_CONFIGURATION", err.Error(), requestID(r))
+				return
+			}
+		}
+	}
+	if contains([]string{"ENTRA_ID", "OKTA", "GOOGLE_WORKSPACE", "GITHUB"}, in.Type) {
+		if err := validateNativeURL(in.BaseURL, s.Assurance.AllowHTTP, s.Assurance.Timeout); err != nil {
+			writeError(w, 400, "INVALID_CONNECTOR_URL", err.Error(), requestID(r))
+			return
+		}
+		if err := validateNativeConfiguration(in.Type, in.Configuration); err != nil {
+			writeError(w, 400, "INVALID_CONNECTOR_CONFIGURATION", err.Error(), requestID(r))
+			return
+		}
 	}
 	org := getSession(r).OrganizationID
 	id := uuid.NewString()
@@ -538,7 +615,7 @@ func (s *Server) createConnector(w http.ResponseWriter, r *http.Request) {
 		var encrypted string
 		encrypted, err = s.Secrets.Encrypt([]byte(in.Credential))
 		if err == nil {
-			_, err = tx.Exec(r.Context(), `INSERT INTO connector_credentials(organization_id,connector_id,ciphertext) VALUES($1,$2,$3)`, org, id, encrypted)
+			_, err = tx.Exec(r.Context(), `INSERT INTO connector_credentials(organization_id,connector_id,ciphertext,provider) VALUES($1,$2,$3,$4)`, org, id, encrypted, secretProviderName(s.Secrets))
 		}
 	}
 	if err == nil {
@@ -554,6 +631,22 @@ func (s *Server) createConnector(w http.ResponseWriter, r *http.Request) {
 func (s *Server) syncConnector(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/connectors/"), "/sync")
 	session := getSession(r)
+	if s.JobMode == "DISTRIBUTED" {
+		if s.DistributedQueue == nil {
+			writeError(w, 503, "JOB_QUEUE_UNAVAILABLE", "The distributed job queue is unavailable.", requestID(r))
+			return
+		}
+		payload := map[string]string{"connectorId": id, "requestId": requestID(r), "actorUserId": session.UserID}
+		jobID, created, err := s.DistributedQueue.Enqueue(r.Context(), session.OrganizationID, "CONNECTOR_SYNC", payload, "connector-sync:"+id+":"+requestID(r), 100)
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
+		_, _ = s.DB.Pool.Exec(r.Context(), `UPDATE identity_connectors SET last_sync_status='QUEUED',updated_at=now() WHERE organization_id=$1 AND id=$2`, session.OrganizationID, id)
+		_ = s.DB.Audit(r.Context(), session.OrganizationID, session.UserID, "connector.sync_queued", "connector", id, map[string]any{"jobId": jobID}, requestID(r))
+		writeJSON(w, http.StatusAccepted, map[string]any{"jobId": jobID, "status": "QUEUED", "created": created})
+		return
+	}
 	var result assurance.SyncResult
 	err := runBounded(r.Context(), s.SyncPool, func(ctx context.Context) error {
 		var syncErr error
@@ -645,6 +738,21 @@ func (s *Server) approveCase(w http.ResponseWriter, r *http.Request) {
 func (s *Server) executeCase(w http.ResponseWriter, r *http.Request) {
 	id := caseIDFromAction(r.URL.Path, "execute")
 	session := getSession(r)
+	if s.JobMode == "DISTRIBUTED" {
+		if s.DistributedQueue == nil {
+			writeError(w, 503, "JOB_QUEUE_UNAVAILABLE", "The distributed job queue is unavailable.", requestID(r))
+			return
+		}
+		payload := map[string]string{"caseId": id, "requestId": requestID(r), "actorUserId": session.UserID}
+		jobID, created, err := s.DistributedQueue.Enqueue(r.Context(), session.OrganizationID, "LIFECYCLE_EXECUTE", payload, "lifecycle-execute:"+id, 200)
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
+		_ = s.DB.Audit(r.Context(), session.OrganizationID, session.UserID, "offboarding.queued", "lifecycle_case", id, map[string]any{"jobId": jobID}, requestID(r))
+		writeJSON(w, http.StatusAccepted, map[string]any{"jobId": jobID, "status": "QUEUED", "created": created})
+		return
+	}
 	var status domain.VerificationStatus
 	err := runBounded(r.Context(), s.ActionPool, func(ctx context.Context) error {
 		var executeErr error

@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: backend, labels: {app.kubernetes.io/name: identitymesh-backend}}
+spec:
+  replicas: 3
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  selector: {matchLabels: {app.kubernetes.io/name: identitymesh-backend}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: identitymesh-backend}}
+    spec:
+      serviceAccountName: identitymesh
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: backend
+          image: ghcr.io/thiagomontozo/identitymesh-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 8080}]
+          envFrom: [{configMapRef: {name: identitymesh-config}}]
+          env:
+            - {name: IDENTITYMESH_DATABASE_URL, valueFrom: {secretKeyRef: {name: identitymesh-secrets, key: database-url}}}
+            - {name: IDENTITYMESH_SESSION_SECRET, valueFrom: {secretKeyRef: {name: identitymesh-secrets, key: session-secret}}}
+            - {name: IDENTITYMESH_VAULT_TOKEN, valueFrom: {secretKeyRef: {name: identitymesh-secrets, key: vault-token}}}
+            - {name: IDENTITYMESH_WORKER_ID, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 200m, memory: 256Mi}, limits: {cpu: "2", memory: 1Gi}}
+          readinessProbe: {httpGet: {path: /ready, port: http}, initialDelaySeconds: 5, periodSeconds: 5, timeoutSeconds: 3, failureThreshold: 6}
+          livenessProbe: {httpGet: {path: /health, port: http}, initialDelaySeconds: 10, periodSeconds: 10, timeoutSeconds: 3}
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata: {name: backend}
+spec:
+  selector: {app.kubernetes.io/name: identitymesh-backend}
+  ports: [{name: http, port: 8080, targetPort: http}]

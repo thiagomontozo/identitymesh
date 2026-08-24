@@ -1,14 +1,15 @@
 # Limitations
 
-IdentityMesh v0.1 is experimental and is not production-ready, compliance-certified, zero-trust-certified, or a guarantee of complete identity visibility or offboarding.
+IdentityMesh is a production deployment candidate, not a compliance-certified product or a guarantee of complete identity visibility/offboarding. Verification covers only connected, observable and successfully reconciled systems.
 
-Administrator email addresses are globally unique in v0.1 because login does not yet include an organization selector.
-
-- Generic SCIM 2.0 is the primary writable connector; LDAP is read-only.
-- No native Entra ID, Okta, Google Workspace, GitHub, Slack, AWS IAM, VPN or other provider-specific connector.
-- Systems must be configured; there is no discovery of unknown systems.
-- No destructive delete, bulk lifecycle, distributed queue/runner cluster or advanced approval graph.
-- Process-local API rate limiting and bounded in-process workers; scheduler coordination uses PostgreSQL advisory locks, but there is no distributed queue/runner cluster.
-- Local AES-GCM secrets only; no HSM or managed secret store implementation.
-- PDF reports are lightweight single-page exports, not a certified evidence or legal-admissibility pipeline.
-- No production-scale load testing or independent security certification.
+- Administrator email addresses are globally unique because login has no organization selector.
+- Systems must be configured; unknown systems cannot be automatically discovered.
+- Native Entra, Okta, Google and GitHub tokens are supplied/rotated externally; the application does not issue OAuth/service-account tokens.
+- LDAP mutations are restricted to explicit ppolicy/Active Directory disable and known membership attributes. There is no arbitrary modify API.
+- Slack, AWS IAM Identity Center, VPN and other roadmap connectors are not native implementations.
+- No destructive account deletion or bulk lifecycle operation.
+- The distributed queue/rate limiter use PostgreSQL; there is no separate regional message broker or globally replicated limiter.
+- Vault HSM protection depends on an operator-managed Vault Enterprise seal-wrap deployment; physical HSM behavior was not validated in this repository's synthetic suite.
+- The 10,000-request two-replica gate does not constitute exhaustive soak, disaster-recovery, geographic-latency or maximum-cardinality validation.
+- Reports and hashes are integrity metadata, not forensic certification or a legal-admissibility claim.
+- No independent security, privacy, zero-trust or regulatory certification.

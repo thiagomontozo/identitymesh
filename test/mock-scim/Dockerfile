@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS build
+FROM golang:1.26.6-alpine3.23 AS build
 WORKDIR /src
 COPY test/mock-scim/go.mod ./
 COPY test/mock-scim/main.go ./

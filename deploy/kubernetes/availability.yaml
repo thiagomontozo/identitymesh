@@ -1,0 +1,16 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: identitymesh-backend}
+spec: {minAvailable: 2, selector: {matchLabels: {app.kubernetes.io/name: identitymesh-backend}}}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: identitymesh-backend}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: backend}
+  minReplicas: 3
+  maxReplicas: 12
+  behavior: {scaleDown: {stabilizationWindowSeconds: 300}}
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 65}}

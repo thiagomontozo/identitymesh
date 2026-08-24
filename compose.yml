@@ -21,7 +21,7 @@ services:
       IDENTITYMESH_DATABASE_URL: postgres://identitymesh:identitymesh-development-only@postgres:5432/identitymesh?sslmode=disable
       IDENTITYMESH_SESSION_SECRET: local-development-secret-replace-before-production
       IDENTITYMESH_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      IDENTITYMESH_ALLOWED_ORIGIN: http://localhost:5173
+      IDENTITYMESH_ALLOWED_ORIGIN: ${IDENTITYMESH_ALLOWED_ORIGIN:-http://localhost:5173}
       IDENTITYMESH_SECURE_COOKIES: "false"
       IDENTITYMESH_REQUIRE_MFA_FOR_PRIVILEGED_ROLES: "false"
       IDENTITYMESH_BOOTSTRAP_ADMIN_EMAIL: ${IDENTITYMESH_BOOTSTRAP_ADMIN_EMAIL:-admin@example.test}

@@ -14,10 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version: '1.24.x', cache: true}
+        with: {go-version: '1.26.6', cache: true}
       - name: Formatting
         run: test -z "$(gofmt -l backend test/mock-scim)"
       - run: go vet ./backend/...
+      - name: Reachable vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./backend/...
       - run: go test -race -coverprofile=coverage.out ./backend/...
       - run: go build -o /tmp/identitymesh ./backend/cmd/server
   integration:
@@ -25,15 +27,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version: '1.24.x', cache: true}
+        with: {go-version: '1.26.6', cache: true}
       - name: Start synthetic providers
         run: docker compose -f compose.test.yml up -d --build --wait
-      - name: PostgreSQL, SCIM, LDAP and lifecycle E2E
+      - name: PostgreSQL, SCIM, LDAP, Vault and lifecycle E2E
         env:
           IDENTITYMESH_TEST_DATABASE_URL: postgres://identitymesh:identitymesh-test-only@localhost:55432/identitymesh_test?sslmode=disable
           IDENTITYMESH_TEST_SCIM_URL: http://localhost:18090/scim/v2
           IDENTITYMESH_TEST_SCIM_B_URL: http://localhost:18091/scim/v2
           IDENTITYMESH_TEST_LDAP_URL: ldap://localhost:1389
+          IDENTITYMESH_TEST_VAULT_URL: http://localhost:18200
         run: go test -tags=integration -count=1 ./backend/...
       - name: Synthetic resource logs
         if: failure()
@@ -47,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: {node-version: '22', cache: npm, cache-dependency-path: frontend/package-lock.json}
+        with: {node-version: '22.19.0', cache: npm, cache-dependency-path: frontend/package-lock.json}
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
@@ -66,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: {node-version: '22', cache: npm, cache-dependency-path: frontend/package-lock.json}
+        with: {node-version: '22.19.0', cache: npm, cache-dependency-path: frontend/package-lock.json}
       - run: cd frontend && npm ci && npx playwright install --with-deps chromium
       - name: Start isolated synthetic application
         env: {IDENTITYMESH_BOOTSTRAP_ADMIN_PASSWORD: identitymesh-demo-password}

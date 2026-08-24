@@ -29,6 +29,16 @@ services:
     ports: ["1389:389"]
     volumes: ["openldap-test-data:/var/lib/ldap", "openldap-test-config:/etc/ldap/slapd.d"]
     healthcheck: {test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=identitymesh,dc=test -D cn=admin,dc=identitymesh,dc=test -w identitymesh-test-only '(objectClass=*)' >/dev/null"], interval: 5s, timeout: 5s, retries: 20}
+  vault-test:
+    image: hashicorp/vault:1.19
+    labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: identitymesh-test-only
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      SKIP_SETCAP: "true"
+    command: ["server", "-dev"]
+    ports: ["18200:8200"]
+    healthcheck: {test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"], interval: 3s, timeout: 3s, retries: 20}
 volumes:
   postgres-test-data: {labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}}
   openldap-test-data: {labels: {com.identitymesh.managed: "true", com.identitymesh.purpose: test}}

@@ -4,4 +4,4 @@ Reconciliation compares expected person lifecycle and access intent with a compl
 
 Only a successful complete sync may mark an expected account missing according to an explicit policy. Failure, timeout, malformed output, or partial pagination preserves prior identities and marks data stale. Findings include active accounts for terminated people, orphans, unresolved identities, duplicate active accounts, privilege observations, stale connectors and state mismatches.
 
-Every SCIM or LDAP synchronization creates a corresponding `ReconciliationRun`. `MANUAL`, `HOURLY` and `DAILY` schedules are supported; scheduled selection is serialized with a PostgreSQL advisory lock and submitted to the bounded synchronization pool. There is no distributed message broker in v0.1.
+Every SCIM, LDAP or native-provider synchronization creates a corresponding `ReconciliationRun`. `MANUAL`, `HOURLY` and `DAILY` schedules are supported; selection is serialized with a PostgreSQL advisory lock and committed to the durable distributed job table. Replicas claim leased jobs with `SKIP LOCKED`, while bounded local pools limit provider concurrency.
