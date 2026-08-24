@@ -1,4 +1,4 @@
-FROM node:22.19.0-alpine3.22 AS build
+FROM node:26.3.0-alpine3.22 AS build
 WORKDIR /app
 COPY frontend/package*.json ./
 RUN --mount=type=secret,id=identitymesh_ca,required=false if [ -f /run/secrets/identitymesh_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/identitymesh_ca; fi; npm ci
