@@ -31,10 +31,10 @@ This directory contains end-to-end tests for the go-ntlmssp library that test ag
    ```powershell
    $env:NTLM_TEST_URL = "http://localhost:8080/"
    $env:NTLM_TEST_USER = "your_username"
-   $env:NTLM_TEST_PASSWORD = "your_password"
+   $env:NTLM_TEST_PASSWORD = "your_password" 
    $env:NTLM_TEST_DOMAIN = "your_domain"  # Optional
    ```
-
+   
    > **Note**: The setup script automatically generates a random secure password if none is provided. For security, avoid hardcoded passwords in scripts or CI environments.
 
 4. **Run tests:**
@@ -59,7 +59,7 @@ The E2E tests cover:
 
 - ✅ Basic NTLM authentication flow
 - ✅ UPN format usernames (`user@domain.com`)
-- ✅ SAM format usernames (`DOMAIN\user`)
+- ✅ SAM format usernames (`DOMAIN\user`) 
 - ✅ Authentication failure scenarios
 - ✅ Server accessibility checks
 - ✅ Context cancellation handling
@@ -79,7 +79,7 @@ The E2E tests cover:
 ### Common Issues
 
 1. **"No username available"** - Set `NTLM_TEST_USER` environment variable
-2. **"No password available"** - Set `NTLM_TEST_PASSWORD` environment variable
+2. **"No password available"** - Set `NTLM_TEST_PASSWORD` environment variable  
 3. **Connection refused** - Ensure IIS is running and accessible on the specified port
 4. **401 Unauthorized** - Check that Windows Authentication is enabled and working
 
