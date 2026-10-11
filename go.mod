@@ -3,7 +3,7 @@ module github.com/thiagomontozo/identitymesh
 go 1.26.6
 
 require (
-	github.com/go-ldap/ldap/v3 v3.4.14
+	github.com/go-ldap/ldap/v3 v3.4.15
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	golang.org/x/crypto v0.55.0
